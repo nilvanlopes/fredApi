@@ -95,6 +95,12 @@ Isso sobe:
 - a API em `http://localhost:8000`
 - o PostgreSQL em `localhost:5433`
 
+## Rede local
+
+Quando a API é consumida pelo Traefik local, ela também entra na rede externa `traefik-local` e fica acessível pelo alias `fred-api` dentro do Docker. Nessa rota, o acesso externo continua em `http://fred.localnetwork:8181`.
+
+Para subir esse modo, use `make deploy-fred` no repositório raiz `docker/`. Esse fluxo publica o Fred como stack no Swarm para que o Traefik local consiga resolver o alias via rede overlay.
+
 ## Testes
 
 ```bash

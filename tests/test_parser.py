@@ -2,7 +2,12 @@ from datetime import datetime
 
 import pytest
 
-from app.parser import ParseError, normalize_name, parse_monthly_subscribers_message
+from app.parser import (
+    ParseError,
+    normalize_name,
+    parse_monthly_subscribers_message,
+    parse_weekly_attendance_message,
+)
 
 
 def test_parse_monthly_subscribers_message() -> None:
@@ -55,3 +60,38 @@ def test_invalid_message_raises_parse_error() -> None:
     with pytest.raises(ParseError):
         parse_monthly_subscribers_message("qualquer coisa")
 
+
+def test_parse_weekly_attendance_message() -> None:
+    parsed = parse_weekly_attendance_message(
+        """LISTA VOLEI FREDERICO 03/06
+1. pyu
+2. João Victor
+3. Fábio
+
+Convidados
+1. fulano (conv douglas)
+""",
+        received_at=datetime(2026, 6, 2, 21, 0, 0),
+    )
+
+    assert parsed.game_date.isoformat() == "2026-06-03"
+    assert [(item.section, item.position, item.name) for item in parsed.entries] == [
+        ("main", 1, "pyu"),
+        ("main", 2, "João Victor"),
+        ("main", 3, "Fábio"),
+        ("guests", 1, "fulano"),
+    ]
+    assert parsed.entries[-1].invited_by == "douglas"
+    assert parsed.entries[-1].normalized_invited_by == "douglas"
+
+
+def test_parse_weekly_attendance_message_normalizes_invisible_chars() -> None:
+    parsed = parse_weekly_attendance_message(
+        "LISTA VOLEI FREDERICO 03/06\n1. \u2060Fábio\n2. Murilo (conv. Pyu)\n",
+        received_at=datetime(2026, 6, 2, 21, 0, 0),
+    )
+
+    assert parsed.entries[0].name == "Fábio"
+    assert parsed.entries[0].normalized_name == "fabio"
+    assert parsed.entries[1].invited_by == "Pyu"
+    assert parsed.entries[1].normalized_invited_by == "pyu"

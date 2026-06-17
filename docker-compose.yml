@@ -1,14 +1,22 @@
 services:
   api:
+    image: fred-api:latest
     build:
       context: .
     env_file:
       - .env
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+    networks:
+      default: {}
+      traefik-local:
+        aliases:
+          - fred-api
 
   postgres:
     image: postgres:16-alpine
@@ -20,6 +28,13 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fred -d fred"]
       interval: 5s
@@ -28,3 +43,7 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  traefik-local:
+    external: true
