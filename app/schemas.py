@@ -40,6 +40,7 @@ class WeeklyAttendanceEntryResponse(BaseModel):
     is_monthly_subscriber: bool
     owes_single_payment: bool
     single_payment_amount_cents: int | None = None
+    prebuilt_team_number: int | None = None
 
 
 class WeeklyAttendanceResponse(BaseModel):
@@ -57,3 +58,48 @@ class PromotionResult(BaseModel):
 
 class PromoteDueResponse(BaseModel):
     processed: list[PromotionResult]
+
+
+class ConversationImportMessageResult(BaseModel):
+    fingerprint: str
+    occurred_at: datetime
+    sender_name: str | None = None
+    message_type: Literal[
+        "monthly_subscribers",
+        "weekly_attendance",
+        "ignored",
+        "review_required",
+    ]
+    status: Literal[
+        "applied",
+        "unchanged",
+        "ignored",
+        "review_required",
+        "stale",
+        "would_apply",
+        "would_be_unchanged",
+    ]
+    analyzer: Literal["rules", "ai"]
+    confidence: float
+    aggregate_key: str | None = None
+    reason: str = ""
+    result: dict = Field(default_factory=dict)
+
+
+class ConversationImportResponse(BaseModel):
+    mode: Literal["preview", "apply"]
+    analysis_mode: Literal["rules", "hybrid", "ai"]
+    chat_id: str
+    total_messages: int
+    new_messages: int
+    ai_analyzed_messages: int
+    relevant_messages: int
+    changed_messages: int
+    unchanged_messages: int
+    ignored_messages: int
+    duplicate_messages: int
+    stale_messages: int
+    review_required_messages: int
+    results: list[ConversationImportMessageResult]
+    results_truncated: int
+    warnings: list[str]

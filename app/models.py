@@ -6,8 +6,10 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
+    JSON,
     Text,
     UniqueConstraint,
     func,
@@ -94,6 +96,10 @@ class WeeklyAttendanceEntry(Base):
             "status IN ('main', 'waiting')",
             name="ck_weekly_attendance_entries_status",
         ),
+        CheckConstraint(
+            "prebuilt_team_number IS NULL OR prebuilt_team_number > 0",
+            name="ck_weekly_attendance_entries_prebuilt_team_positive",
+        ),
         UniqueConstraint(
             "attendance_id",
             "source_section",
@@ -127,6 +133,7 @@ class WeeklyAttendanceEntry(Base):
         default=False,
     )
     single_payment_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prebuilt_team_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -139,3 +146,41 @@ class WeeklyAttendanceEntry(Base):
         onupdate=func.now(),
     )
     attendance: Mapped[WeeklyAttendance] = relationship(back_populates="entries")
+
+
+class ProcessedConversationMessage(Base):
+    __tablename__ = "processed_conversation_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "message_type IN "
+            "('monthly_subscribers', 'weekly_attendance', 'ignored', 'review_required')",
+            name="ck_processed_conversation_messages_type",
+        ),
+        CheckConstraint(
+            "status IN ('applied', 'unchanged', 'ignored', 'review_required', 'stale')",
+            name="ck_processed_conversation_messages_status",
+        ),
+        UniqueConstraint(
+            "fingerprint",
+            name="uq_processed_conversation_messages_fingerprint",
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message_type: Mapped[str] = mapped_column(Text, nullable=False)
+    aggregate_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    analyzer: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    analysis: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

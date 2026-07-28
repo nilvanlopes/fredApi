@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -7,9 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_single_game_price_cents, get_weekly_attendance_capacity
-from app.models import MonthlySubscriber, WeeklyAttendance, WeeklyAttendanceEntry
+from app.models import (
+    MonthlySubscriber,
+    WeeklyAttendance,
+    WeeklyAttendanceEntry,
+)
 from app.parser import (
+    ParsedMonthlySubscribers,
     ParsedSubscriberLine,
+    ParsedWeeklyAttendance,
     ParsedWeeklyAttendanceLine,
     parse_monthly_subscribers_message,
     parse_weekly_attendance_message,
@@ -39,6 +46,7 @@ class _AttendanceEntryState:
     is_monthly_subscriber: bool
     owes_single_payment: bool
     single_payment_amount_cents: int | None
+    prebuilt_team_number: int | None
 
 
 async def process_monthly_subscribers_message(
@@ -46,8 +54,22 @@ async def process_monthly_subscribers_message(
     *,
     text: str,
     received_at=None,
+    commit: bool = True,
 ) -> ProcessMessageResponse:
     parsed = parse_monthly_subscribers_message(text, received_at=received_at)
+    return await apply_monthly_subscribers(
+        session,
+        parsed=parsed,
+        commit=commit,
+    )
+
+
+async def apply_monthly_subscribers(
+    session: AsyncSession,
+    *,
+    parsed: ParsedMonthlySubscribers,
+    commit: bool = True,
+) -> ProcessMessageResponse:
 
     created: list[SubscriberChange] = []
     updated: list[SubscriberChange] = []
@@ -92,7 +114,10 @@ async def process_monthly_subscribers_message(
         else:
             unchanged.append(_change_from_line(line))
 
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
 
     return ProcessMessageResponse(
         type="monthly_subscribers",
@@ -110,8 +135,24 @@ async def process_weekly_attendance_message(
     *,
     text: str,
     received_at: datetime | None = None,
+    commit: bool = True,
 ) -> WeeklyAttendanceResponse:
     parsed = parse_weekly_attendance_message(text, received_at=received_at)
+    return await apply_weekly_attendance(
+        session,
+        parsed=parsed,
+        received_at=received_at,
+        commit=commit,
+    )
+
+
+async def apply_weekly_attendance(
+    session: AsyncSession,
+    *,
+    parsed: ParsedWeeklyAttendance,
+    received_at: datetime | None = None,
+    commit: bool = True,
+) -> WeeklyAttendanceResponse:
     attendance = await _get_weekly_attendance(session, game_date=parsed.game_date)
     capacity = attendance.capacity if attendance is not None else get_weekly_attendance_capacity()
     cutoff_at = _build_cutoff_at(parsed.game_date)
@@ -145,8 +186,8 @@ async def process_weekly_attendance_message(
             )
         )
 
-    session.add_all(
-        [
+    for state in states:
+        session.add(
             WeeklyAttendanceEntry(
                 attendance_id=attendance.id,
                 source_section=state.section,
@@ -160,11 +201,13 @@ async def process_weekly_attendance_message(
                 is_monthly_subscriber=state.is_monthly_subscriber,
                 owes_single_payment=state.owes_single_payment,
                 single_payment_amount_cents=state.single_payment_amount_cents,
+                prebuilt_team_number=state.prebuilt_team_number,
             )
-            for state in states
-        ]
-    )
-    await session.commit()
+        )
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
 
     return WeeklyAttendanceResponse(
         type="weekly_attendance",
@@ -203,6 +246,7 @@ async def promote_due_weekly_attendances(
                 normalized_name=entry.normalized_name,
                 invited_by=entry.invited_by,
                 normalized_invited_by=entry.normalized_invited_by,
+                prebuilt_team_number=entry.prebuilt_team_number,
             )
             for entry in sorted(attendance.entries, key=lambda item: item.display_order)
         ]
@@ -273,14 +317,14 @@ async def _get_monthly_subscriber_names(
     *,
     month: int,
     year: int,
-) -> set[str]:
+) -> Counter[str]:
     result = await session.execute(
         select(MonthlySubscriber.normalized_name).where(
             MonthlySubscriber.month == month,
             MonthlySubscriber.year == year,
         )
     )
-    return set(result.scalars().all())
+    return Counter(result.scalars().all())
 
 
 def _has_changes(existing: MonthlySubscriber, line: ParsedSubscriberLine) -> bool:
@@ -314,7 +358,7 @@ def _normalize_reference_time(value: datetime | None) -> datetime:
 def _build_entry_states(
     lines: list[ParsedWeeklyAttendanceLine],
     *,
-    monthly_names: set[str],
+    monthly_names: Counter[str],
     capacity: int,
     after_cutoff: bool,
 ) -> list[_AttendanceEntryState]:
@@ -322,9 +366,14 @@ def _build_entry_states(
     main_slots = 0
     waiting_indexes: list[int] = []
     single_game_price_cents = get_single_game_price_cents()
+    remaining_monthly_names = monthly_names.copy()
 
     for display_order, line in enumerate(lines, start=1):
-        is_monthly_subscriber = line.normalized_name in monthly_names
+        is_monthly_subscriber = (
+            not line.is_guest and remaining_monthly_names[line.normalized_name] > 0
+        )
+        if is_monthly_subscriber:
+            remaining_monthly_names[line.normalized_name] -= 1
         has_priority = line.section == "main" and is_monthly_subscriber
         is_main = has_priority and main_slots < capacity
         if is_main:
@@ -347,6 +396,7 @@ def _build_entry_states(
                 single_payment_amount_cents=(
                     single_game_price_cents if (not is_monthly_subscriber and is_main) else None
                 ),
+                prebuilt_team_number=line.prebuilt_team_number,
             )
         )
 
@@ -368,6 +418,7 @@ def _build_entry_states(
                 single_payment_amount_cents=(
                     single_game_price_cents if not current.is_monthly_subscriber else None
                 ),
+                prebuilt_team_number=current.prebuilt_team_number,
             )
 
     return states
@@ -386,4 +437,9 @@ def _weekly_entry_to_response(
         is_monthly_subscriber=entry.is_monthly_subscriber,
         owes_single_payment=entry.owes_single_payment,
         single_payment_amount_cents=entry.single_payment_amount_cents,
+        prebuilt_team_number=(
+            entry.prebuilt_team_number
+            if isinstance(entry, _AttendanceEntryState)
+            else entry.prebuilt_team_number
+        ),
     )
