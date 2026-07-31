@@ -15,6 +15,7 @@ COPY app ./app
 COPY alembic ./alembic
 COPY tests ./tests
 COPY alembic.ini ./
+COPY docker-compose.ollama.yml ./
 
 RUN uv sync --frozen --extra dev
 
