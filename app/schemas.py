@@ -60,6 +60,21 @@ class PromoteDueResponse(BaseModel):
     processed: list[PromotionResult]
 
 
+class MonthlyMessageTemplateResponse(BaseModel):
+    type: Literal["monthly_subscribers"]
+    reference_date: date
+    month: int
+    year: int
+    text: str
+
+
+class WeeklyMessageTemplateResponse(BaseModel):
+    type: Literal["weekly_attendance"]
+    reference_date: date
+    game_date: date
+    text: str
+
+
 class ConversationImportMessageResult(BaseModel):
     fingerprint: str
     occurred_at: datetime

@@ -45,8 +45,16 @@ mesmos serviços de domínio.
   - Processa explicitamente uma lista semanal.
 - `POST /weekly-attendance/promote-due`
   - Executa as promoções de convidados vencidas.
+- `GET /messages/templates/monthly-subscribers`
+  - Gera a mensagem inicial de assinantes para o mês atual.
+- `GET /messages/templates/weekly-attendance`
+  - Gera a mensagem inicial da lista para a quarta-feira atual ou seguinte.
 - `POST /conversation-imports`
   - Recebe um export UTF-8 do WhatsApp como `text/plain`.
+
+Os endpoints de template aceitam `reference_date=YYYY-MM-DD` para pré-visualização
+determinística. Sem o parâmetro, usam a data atual em `America/Sao_Paulo`. Eles
+somente geram o texto; o agendamento fica no n8n e o envio é feito pelo WAHA.
 
 Exemplo de payload:
 

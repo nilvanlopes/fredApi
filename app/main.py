@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
@@ -11,14 +11,21 @@ from app.conversation_import import (
     record_realtime_processed_message,
 )
 from app.database import get_session
+from app.message_templates import (
+    local_reference_date,
+    render_monthly_subscribers_template,
+    render_weekly_attendance_template,
+)
 from app.ollama_service import OllamaServiceError
 from app.parser import ParseError, parse_monthly_subscribers_message
 from app.schemas import (
     ConversationImportResponse,
+    MonthlyMessageTemplateResponse,
     ProcessMessageRequest,
     ProcessMessageResponse,
     PromoteDueResponse,
     WeeklyAttendanceResponse,
+    WeeklyMessageTemplateResponse,
 )
 from app.whatsapp_export import WhatsAppExportError
 from app.services import (
@@ -33,6 +40,40 @@ app = FastAPI(title="Volei Frederico API")
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get(
+    "/messages/templates/monthly-subscribers",
+    response_model=MonthlyMessageTemplateResponse,
+)
+async def monthly_subscribers_template(
+    reference_date: date | None = Query(default=None),
+) -> MonthlyMessageTemplateResponse:
+    resolved_date = local_reference_date(reference_date)
+    return MonthlyMessageTemplateResponse(
+        type="monthly_subscribers",
+        reference_date=resolved_date,
+        month=resolved_date.month,
+        year=resolved_date.year,
+        text=render_monthly_subscribers_template(resolved_date),
+    )
+
+
+@app.get(
+    "/messages/templates/weekly-attendance",
+    response_model=WeeklyMessageTemplateResponse,
+)
+async def weekly_attendance_template(
+    reference_date: date | None = Query(default=None),
+) -> WeeklyMessageTemplateResponse:
+    resolved_date = local_reference_date(reference_date)
+    game_date, text = render_weekly_attendance_template(resolved_date)
+    return WeeklyMessageTemplateResponse(
+        type="weekly_attendance",
+        reference_date=resolved_date,
+        game_date=game_date,
+        text=text,
+    )
 
 
 @app.post(
