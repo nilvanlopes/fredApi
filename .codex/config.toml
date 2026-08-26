@@ -1,0 +1,14 @@
+[mcp_servers.fred]
+command = "docker"
+args = [
+  "compose",
+  "-f",
+  "/home/pyu/docker/fred/docker-compose.yml",
+  "-f",
+  "/home/pyu/docker/fred/docker-compose.mcp.yml",
+  "run",
+  "--rm",
+  "-T",
+  "--no-deps",
+  "mcp",
+]
