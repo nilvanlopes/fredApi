@@ -16,6 +16,10 @@ def get_single_game_price_cents() -> int:
     return int(os.getenv("SINGLE_GAME_PRICE_CENTS", "750"))
 
 
+def get_monthly_subscription_price_cents() -> int:
+    return int(os.getenv("MONTHLY_SUBSCRIPTION_PRICE_CENTS", "1250"))
+
+
 def get_conversation_import_max_bytes() -> int:
     return int(os.getenv("CONVERSATION_IMPORT_MAX_BYTES", "2000000"))
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from app.config import get_monthly_subscription_price_cents
 from app.database import SessionLocal
 from app.models import MonthlySubscriber, WeeklyAttendance, WeeklyAttendanceEntry
 
@@ -80,6 +81,35 @@ class PersonMatch(BaseModel):
 class PersonSearchResult(BaseModel):
     query: str
     matches: list[PersonMatch] = Field(default_factory=list)
+
+
+class MonthlyUnpaidEntry(BaseModel):
+    month: int
+    year: int
+    position: int
+    name: str
+    amount_cents: int
+
+
+class SinglePaymentUnpaidEntry(BaseModel):
+    game_date: date
+    position: int
+    name: str
+    source_section: Literal["main", "guests"]
+    status: Literal["main", "waiting"]
+    is_monthly_subscriber: bool
+    amount_cents: int
+
+
+class PersonPaymentSummary(BaseModel):
+    query: str
+    start_date: date
+    end_date: date
+    monthly_unpaid: list[MonthlyUnpaidEntry] = Field(default_factory=list)
+    single_payment_unpaid: list[SinglePaymentUnpaidEntry] = Field(default_factory=list)
+    monthly_unpaid_total_cents: int
+    single_payment_unpaid_total_cents: int
+    total_unpaid_cents: int
 
 
 def _reference_date(value: date | None) -> date:
@@ -249,6 +279,82 @@ async def search_person(
             )
 
     return PersonSearchResult(query=name, matches=matches)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_person_payment_summary(
+    name: Annotated[str, Field(min_length=1, max_length=100, description="Nome ou parte do nome.")],
+    start_date: Annotated[date, Field(description="Início inclusivo do período da consulta.")],
+    end_date: Annotated[date, Field(description="Fim inclusivo do período da consulta.")],
+) -> PersonPaymentSummary:
+    """Resume mensalidades e partidas avulsas pendentes de uma pessoa no período."""
+    if end_date < start_date:
+        raise ValueError("end_date deve ser maior ou igual a start_date")
+
+    normalized_name = name.strip().casefold()
+    monthly_unpaid: list[MonthlyUnpaidEntry] = []
+    single_payment_unpaid: list[SinglePaymentUnpaidEntry] = []
+    monthly_amount_cents = get_monthly_subscription_price_cents()
+
+    async with SessionLocal() as session:
+        monthly_result = await session.execute(
+            select(MonthlySubscriber)
+            .where(
+                func.lower(MonthlySubscriber.name).contains(normalized_name),
+                MonthlySubscriber.has_paid.is_(False),
+            )
+            .order_by(MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position)
+        )
+        for subscriber in monthly_result.scalars():
+            reference = date(subscriber.year, subscriber.month, 1)
+            if start_date <= reference <= end_date:
+                monthly_unpaid.append(
+                    MonthlyUnpaidEntry(
+                        month=subscriber.month,
+                        year=subscriber.year,
+                        position=subscriber.position,
+                        name=subscriber.name,
+                        amount_cents=monthly_amount_cents,
+                    )
+                )
+
+        weekly_result = await session.execute(
+            select(WeeklyAttendanceEntry)
+            .options(selectinload(WeeklyAttendanceEntry.attendance))
+            .join(WeeklyAttendance)
+            .where(
+                func.lower(WeeklyAttendanceEntry.name).contains(normalized_name),
+                WeeklyAttendanceEntry.owes_single_payment.is_(True),
+                WeeklyAttendance.game_date >= start_date,
+                WeeklyAttendance.game_date <= end_date,
+            )
+            .order_by(WeeklyAttendance.game_date, WeeklyAttendanceEntry.display_order)
+        )
+        for entry in weekly_result.scalars():
+            single_payment_unpaid.append(
+                SinglePaymentUnpaidEntry(
+                    game_date=entry.attendance.game_date,
+                    position=entry.source_position,
+                    name=entry.name,
+                    source_section=entry.source_section,
+                    status=entry.status,
+                    is_monthly_subscriber=entry.is_monthly_subscriber,
+                    amount_cents=entry.single_payment_amount_cents or 0,
+                )
+            )
+
+    monthly_total = sum(entry.amount_cents for entry in monthly_unpaid)
+    single_payment_total = sum(entry.amount_cents for entry in single_payment_unpaid)
+    return PersonPaymentSummary(
+        query=name,
+        start_date=start_date,
+        end_date=end_date,
+        monthly_unpaid=monthly_unpaid,
+        single_payment_unpaid=single_payment_unpaid,
+        monthly_unpaid_total_cents=monthly_total,
+        single_payment_unpaid_total_cents=single_payment_total,
+        total_unpaid_cents=monthly_total + single_payment_total,
+    )
 
 
 def main() -> None:
