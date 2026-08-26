@@ -73,6 +73,8 @@ class PersonMatch(BaseModel):
     status: Literal["main", "waiting"] | None = None
     is_monthly_subscriber: bool | None = None
     has_paid: bool | None = None
+    owes_single_payment: bool | None = None
+    single_payment_amount_cents: int | None = None
 
 
 class PersonSearchResult(BaseModel):
@@ -190,16 +192,24 @@ async def list_waiting_guests(
 async def search_person(
     name: Annotated[str, Field(min_length=1, max_length=100, description="Nome ou parte do nome.")],
     game_date: Annotated[date | None, Field(description="Limita a busca semanal a uma data.")] = None,
+    unpaid_only: Annotated[
+        bool,
+        Field(description="Retorna somente entradas com pagamento pendente."),
+    ] = False,
 ) -> PersonSearchResult:
-    """Busca uma pessoa nas listas mensais e semanais sem diferenciar maiúsculas/minúsculas."""
+    """Busca uma pessoa nas listas mensais e semanais, opcionalmente só pendentes."""
     normalized_name = name.strip().casefold()
     matches: list[PersonMatch] = []
     async with SessionLocal() as session:
-        monthly_result = await session.execute(
-            select(MonthlySubscriber)
-            .where(func.lower(MonthlySubscriber.name).contains(normalized_name))
-            .order_by(MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position)
+        monthly_query = select(MonthlySubscriber).where(
+            func.lower(MonthlySubscriber.name).contains(normalized_name)
         )
+        if unpaid_only:
+            monthly_query = monthly_query.where(MonthlySubscriber.has_paid.is_(False))
+        monthly_query = monthly_query.order_by(
+            MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position
+        )
+        monthly_result = await session.execute(monthly_query)
         for subscriber in monthly_result.scalars():
             matches.append(
                 PersonMatch(
@@ -219,6 +229,8 @@ async def search_person(
             .where(func.lower(WeeklyAttendanceEntry.name).contains(normalized_name))
             .order_by(WeeklyAttendance.game_date, WeeklyAttendanceEntry.display_order)
         )
+        if unpaid_only:
+            weekly_query = weekly_query.where(WeeklyAttendanceEntry.owes_single_payment.is_(True))
         if game_date is not None:
             weekly_query = weekly_query.where(WeeklyAttendance.game_date == game_date)
         weekly_result = await session.execute(weekly_query)
@@ -231,6 +243,8 @@ async def search_person(
                     name=entry.name,
                     status=entry.status,
                     is_monthly_subscriber=entry.is_monthly_subscriber,
+                    owes_single_payment=entry.owes_single_payment,
+                    single_payment_amount_cents=entry.single_payment_amount_cents,
                 )
             )
 
