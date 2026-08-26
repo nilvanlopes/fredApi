@@ -1,0 +1,17 @@
+services:
+  mcp:
+    image: fred-api:latest
+    env_file:
+      - .env
+    command: ["fred-mcp"]
+    stdin_open: true
+    tty: false
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - fred

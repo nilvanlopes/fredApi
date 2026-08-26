@@ -16,6 +16,7 @@ WhatsApp do Volei Frederico.
 - **Docker Compose** para build da imagem e comandos auxiliares
 - **uv** para gerenciamento de dependências e build da imagem
 - **pytest** para testes
+- **MCP Python SDK** para consultas seguras do banco pela LLM
 
 ## O que o projeto faz
 
@@ -157,8 +158,49 @@ como `Leal(conv)3️⃣`, o nome e limpo e o time pre-montado e salvo na coluna
 - `app/models.py` - modelos SQLAlchemy
 - `app/schemas.py` - schemas Pydantic
 - `app/database.py` - engine e sessão async
+- `app/mcp_server.py` - servidor MCP somente leitura para consultas do Fred
 - `alembic/` - migrations
 - `tests/` - testes do parser
+
+## MCP do Fred
+
+O Fred inclui um servidor MCP separado da API HTTP. Ele expõe somente
+ferramentas de domínio e nunca aceita SQL arbitrário ou operações de escrita.
+As ferramentas disponíveis são:
+
+- `get_weekly_attendance`: consulta a lista principal e a fila de espera.
+- `list_waiting_guests`: consulta os convidados que ainda aguardam vaga.
+- `get_monthly_subscribers`: consulta os assinantes de um mês e ano.
+- `search_person`: busca uma pessoa nas listas mensais e semanais.
+
+O servidor roda dentro do Docker e usa a mesma `DATABASE_URL` do serviço da
+API. Depois de subir o Fred e construir a imagem, o cliente MCP pode iniciar o
+servidor por stdio com:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mcp.yml run --rm -T mcp
+```
+
+Para clientes que aceitam configuração de comando, use o equivalente:
+
+```json
+{
+  "mcpServers": {
+    "fred": {
+      "command": "docker",
+      "args": [
+        "compose", "-f", "/caminho/para/fred/docker-compose.yml",
+        "-f", "/caminho/para/fred/docker-compose.mcp.yml",
+        "run", "--rm", "-T", "mcp"
+      ]
+    }
+  }
+}
+```
+
+O cliente envia perguntas como “quem está aguardando vaga nesta quarta?”;
+a LLM escolhe a ferramenta apropriada e recebe dados estruturados do Fred.
+Credenciais do banco permanecem dentro do ambiente Docker.
 
 ## Configuração
 
