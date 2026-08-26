@@ -42,3 +42,20 @@ def render_weekly_attendance_template(reference_date: date) -> tuple[date, str]:
         "1. "
     )
     return game_date, text
+
+
+def render_weekly_attendance_message(game_date: date, entries) -> str:
+    main_entries = [entry for entry in entries if entry.status == "main"]
+    waiting_entries = [entry for entry in entries if entry.status == "waiting"]
+    lines = [f"LISTA VÔLEI FREDERICO {game_date:%d/%m}"]
+    lines.extend(
+        f"{position}. {entry.name}"
+        for position, entry in enumerate(main_entries, start=1)
+    )
+    lines.append("")
+    lines.append("Convidados")
+    lines.extend(
+        f"{position}. {entry.name}"
+        for position, entry in enumerate(waiting_entries, start=1)
+    )
+    return "\n".join(lines)

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_single_game_price_cents, get_weekly_attendance_capacity
+from app.message_templates import render_weekly_attendance_message
 from app.models import (
     MonthlySubscriber,
     WeeklyAttendance,
@@ -275,6 +276,10 @@ async def promote_due_weekly_attendances(
                 PromotionResult(
                     game_date=attendance.game_date,
                     promoted=promoted,
+                    text=render_weekly_attendance_message(
+                        attendance.game_date,
+                        sorted(attendance.entries, key=lambda item: item.display_order),
+                    ),
                 )
             )
 

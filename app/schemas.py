@@ -54,6 +54,7 @@ class WeeklyAttendanceResponse(BaseModel):
 class PromotionResult(BaseModel):
     game_date: date
     promoted: list[WeeklyAttendanceEntryResponse]
+    text: str
 
 
 class PromoteDueResponse(BaseModel):

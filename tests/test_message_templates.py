@@ -8,6 +8,7 @@ from app.message_templates import (
     MONTH_NAMES,
     next_wednesday,
     render_monthly_subscribers_template,
+    render_weekly_attendance_message,
     render_weekly_attendance_template,
 )
 from app.parser import (
@@ -48,6 +49,22 @@ def test_weekly_template_uses_wednesday_of_monday_week() -> None:
 
 def test_next_wednesday_handles_year_boundary() -> None:
     assert next_wednesday(date(2024, 12, 30)) == date(2025, 1, 1)
+
+
+def test_render_weekly_attendance_message_places_promoted_guests_in_main_list() -> None:
+    entries = [
+        type("Entry", (), {"name": "Pyu", "status": "main"})(),
+        type("Entry", (), {"name": "Convidado", "status": "main"})(),
+        type("Entry", (), {"name": "Aguardando", "status": "waiting"})(),
+    ]
+
+    assert render_weekly_attendance_message(date(2026, 8, 26), entries) == (
+        "LISTA VÔLEI FREDERICO 26/08\n"
+        "1. Pyu\n"
+        "2. Convidado\n\n"
+        "Convidados\n"
+        "1. Aguardando"
+    )
 
 
 def test_generated_templates_round_trip_through_existing_parsers() -> None:

@@ -44,7 +44,8 @@ mesmos serviços de domínio.
 - `POST /messages/weekly-attendance/process`
   - Processa explicitamente uma lista semanal.
 - `POST /weekly-attendance/promote-due`
-  - Executa as promoções de convidados vencidas.
+  - Executa as promoções de convidados vencidas e retorna o texto atualizado
+    da lista para envio ao WhatsApp.
 - `GET /messages/templates/monthly-subscribers`
   - Gera a mensagem inicial de assinantes para o mês atual.
 - `GET /messages/templates/weekly-attendance`
