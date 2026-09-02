@@ -61,6 +61,11 @@ class PromoteDueResponse(BaseModel):
     processed: list[PromotionResult]
 
 
+class WeeklyAttendanceMessageResponse(BaseModel):
+    game_date: date
+    text: str
+
+
 class MonthlyMessageTemplateResponse(BaseModel):
     type: Literal["monthly_subscribers"]
     reference_date: date

@@ -47,6 +47,9 @@ mesmos serviços de domínio.
 - `POST /weekly-attendance/promote-due`
   - Executa as promoções de convidados vencidas e retorna o texto atualizado
     da lista para envio ao WhatsApp.
+- `GET /weekly-attendance/message`
+  - Retorna o texto da lista persistida na data atual, após quaisquer promoções.
+  - Aceita `game_date=YYYY-MM-DD` para consultar uma data específica.
 - `GET /messages/templates/monthly-subscribers`
   - Gera a mensagem inicial de assinantes para o mês atual.
 - `GET /messages/templates/weekly-attendance`

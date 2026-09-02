@@ -24,11 +24,13 @@ from app.schemas import (
     ProcessMessageRequest,
     ProcessMessageResponse,
     PromoteDueResponse,
+    WeeklyAttendanceMessageResponse,
     WeeklyAttendanceResponse,
     WeeklyMessageTemplateResponse,
 )
 from app.whatsapp_export import WhatsAppExportError
 from app.services import (
+    get_weekly_attendance_message,
     process_monthly_subscribers_message,
     process_weekly_attendance_message,
     promote_due_weekly_attendances,
@@ -223,3 +225,24 @@ async def promote_due_attendances(
     session: AsyncSession = Depends(get_session),
 ) -> PromoteDueResponse:
     return await promote_due_weekly_attendances(session)
+
+
+@app.get(
+    "/weekly-attendance/message",
+    response_model=WeeklyAttendanceMessageResponse,
+)
+async def weekly_attendance_message(
+    game_date: date | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> WeeklyAttendanceMessageResponse:
+    resolved_date = game_date or local_reference_date()
+    result = await get_weekly_attendance_message(
+        session,
+        game_date=resolved_date,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"lista semanal de {resolved_date.isoformat()} não encontrada",
+        )
+    return result

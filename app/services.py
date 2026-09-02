@@ -1,6 +1,6 @@
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
@@ -28,6 +28,7 @@ from app.schemas import (
     PromotionResult,
     SubscriberChange,
     WeeklyAttendanceEntryResponse,
+    WeeklyAttendanceMessageResponse,
     WeeklyAttendanceResponse,
 )
 
@@ -285,6 +286,29 @@ async def promote_due_weekly_attendances(
 
     await session.commit()
     return PromoteDueResponse(processed=processed)
+
+
+async def get_weekly_attendance_message(
+    session: AsyncSession,
+    *,
+    game_date: date,
+) -> WeeklyAttendanceMessageResponse | None:
+    result = await session.execute(
+        select(WeeklyAttendance)
+        .options(selectinload(WeeklyAttendance.entries))
+        .where(WeeklyAttendance.game_date == game_date)
+    )
+    attendance = result.scalar_one_or_none()
+    if attendance is None:
+        return None
+
+    return WeeklyAttendanceMessageResponse(
+        game_date=attendance.game_date,
+        text=render_weekly_attendance_message(
+            attendance.game_date,
+            sorted(attendance.entries, key=lambda item: item.display_order),
+        ),
+    )
 
 
 async def _get_by_position(
