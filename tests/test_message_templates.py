@@ -67,6 +67,35 @@ def test_render_weekly_attendance_message_places_promoted_guests_in_main_list() 
     )
 
 
+def test_render_weekly_attendance_message_keeps_inviter_and_omits_empty_waiting() -> None:
+    entries = [
+        type(
+            "Entry",
+            (),
+            {
+                "name": "Pyu",
+                "status": "main",
+                "invited_by": None,
+            },
+        )(),
+        type(
+            "Entry",
+            (),
+            {
+                "name": "Renato",
+                "status": "main",
+                "invited_by": "Ana Caroline",
+            },
+        )(),
+    ]
+
+    assert render_weekly_attendance_message(date(2026, 9, 2), entries) == (
+        "LISTA VÔLEI FREDERICO 02/09\n"
+        "1. Pyu\n"
+        "2. Renato (conv. Ana Caroline)"
+    )
+
+
 def test_generated_templates_round_trip_through_existing_parsers() -> None:
     monthly_text = render_monthly_subscribers_template(date(2026, 8, 1))
     game_date, weekly_text = render_weekly_attendance_template(date(2026, 8, 10))

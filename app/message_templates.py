@@ -47,15 +47,23 @@ def render_weekly_attendance_template(reference_date: date) -> tuple[date, str]:
 def render_weekly_attendance_message(game_date: date, entries) -> str:
     main_entries = [entry for entry in entries if entry.status == "main"]
     waiting_entries = [entry for entry in entries if entry.status == "waiting"]
+
+    def display_name(entry) -> str:
+        invited_by = getattr(entry, "invited_by", None)
+        if invited_by:
+            return f"{entry.name} (conv. {invited_by})"
+        return entry.name
+
     lines = [f"LISTA VÔLEI FREDERICO {game_date:%d/%m}"]
     lines.extend(
-        f"{position}. {entry.name}"
+        f"{position}. {display_name(entry)}"
         for position, entry in enumerate(main_entries, start=1)
     )
-    lines.append("")
-    lines.append("Convidados")
-    lines.extend(
-        f"{position}. {entry.name}"
-        for position, entry in enumerate(waiting_entries, start=1)
-    )
+    if waiting_entries:
+        lines.append("")
+        lines.append("Convidados")
+        lines.extend(
+            f"{position}. {display_name(entry)}"
+            for position, entry in enumerate(waiting_entries, start=1)
+        )
     return "\n".join(lines)
