@@ -14,6 +14,21 @@ class ProcessMessageRequest(BaseModel):
     sender_name: str | None = None
 
 
+class PersonAliasRequest(BaseModel):
+    alias: str = Field(min_length=1, max_length=100)
+    canonical_name: str = Field(min_length=1, max_length=100)
+
+
+class PersonAliasResponse(BaseModel):
+    alias: str
+    alias_normalized: str
+    canonical_name: str
+    canonical_normalized: str
+    updated_monthly: int
+    updated_weekly: int
+    updated_inviter: int
+
+
 class SubscriberChange(BaseModel):
     position: int
     name: str | None = None

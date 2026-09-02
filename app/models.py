@@ -22,6 +22,22 @@ class Base(DeclarativeBase):
     pass
 
 
+class PersonAlias(Base):
+    __tablename__ = "person_aliases"
+    __table_args__ = (
+        UniqueConstraint("alias_normalized", name="uq_person_aliases_alias_normalized"),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    alias: Mapped[str] = mapped_column(Text, nullable=False)
+    alias_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class MonthlySubscriber(Base):
     __tablename__ = "monthly_subscribers"
     __table_args__ = (

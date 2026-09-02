@@ -140,6 +140,22 @@ A tabela principal hoje é `monthly_subscribers`, com:
 - `position`
 - `name`
 - `normalized_name`
+
+## Aliases de nomes
+
+Apelidos podem ser cadastrados pela API e passam a alimentar o `normalized_name`
+nas próximas mensagens. O cadastro também atualiza os registros materializados
+existentes, incluindo `invited_by` semanal, sem alterar o texto original do
+ledger de mensagens processadas:
+
+```bash
+curl -X POST http://localhost:8001/person-aliases \
+  -H 'Content-Type: application/json' \
+  -d '{"alias":"moges","canonical_name":"Gomes"}'
+```
+
+O nome recebido continua no campo `name`; somente sua forma normalizada passa a
+ser `gomes`. Aliases já cadastrados ou conflitos retornam `409`.
 - `month`
 - `year`
 - `has_paid`

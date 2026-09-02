@@ -9,8 +9,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.config import get_monthly_subscription_price_cents
+from app.aliases import resolve_normalized_name
 from app.database import SessionLocal
 from app.models import MonthlySubscriber, WeeklyAttendance, WeeklyAttendanceEntry
+from app.parser import normalize_name
 
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
@@ -228,11 +230,12 @@ async def search_person(
     ] = False,
 ) -> PersonSearchResult:
     """Busca uma pessoa nas listas mensais e semanais, opcionalmente só pendentes."""
-    normalized_name = name.strip().casefold()
+    normalized_name = normalize_name(name)
     matches: list[PersonMatch] = []
     async with SessionLocal() as session:
+        normalized_name = await resolve_normalized_name(session, normalized_name) or normalized_name
         monthly_query = select(MonthlySubscriber).where(
-            func.lower(MonthlySubscriber.name).contains(normalized_name)
+            MonthlySubscriber.normalized_name.contains(normalized_name)
         )
         if unpaid_only:
             monthly_query = monthly_query.where(MonthlySubscriber.has_paid.is_(False))
@@ -256,7 +259,7 @@ async def search_person(
             select(WeeklyAttendanceEntry)
             .options(selectinload(WeeklyAttendanceEntry.attendance))
             .join(WeeklyAttendance)
-            .where(func.lower(WeeklyAttendanceEntry.name).contains(normalized_name))
+            .where(WeeklyAttendanceEntry.normalized_name.contains(normalized_name))
             .order_by(WeeklyAttendance.game_date, WeeklyAttendanceEntry.display_order)
         )
         if unpaid_only:
@@ -291,16 +294,17 @@ async def get_person_payment_summary(
     if end_date < start_date:
         raise ValueError("end_date deve ser maior ou igual a start_date")
 
-    normalized_name = name.strip().casefold()
+    normalized_name = normalize_name(name)
     monthly_unpaid: list[MonthlyUnpaidEntry] = []
     single_payment_unpaid: list[SinglePaymentUnpaidEntry] = []
     monthly_amount_cents = get_monthly_subscription_price_cents()
 
     async with SessionLocal() as session:
+        normalized_name = await resolve_normalized_name(session, normalized_name) or normalized_name
         monthly_result = await session.execute(
             select(MonthlySubscriber)
             .where(
-                func.lower(MonthlySubscriber.name).contains(normalized_name),
+                MonthlySubscriber.normalized_name.contains(normalized_name),
                 MonthlySubscriber.has_paid.is_(False),
             )
             .order_by(MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position)
@@ -323,7 +327,7 @@ async def get_person_payment_summary(
             .options(selectinload(WeeklyAttendanceEntry.attendance))
             .join(WeeklyAttendance)
             .where(
-                func.lower(WeeklyAttendanceEntry.name).contains(normalized_name),
+                WeeklyAttendanceEntry.normalized_name.contains(normalized_name),
                 WeeklyAttendanceEntry.owes_single_payment.is_(True),
                 WeeklyAttendance.game_date >= start_date,
                 WeeklyAttendance.game_date <= end_date,

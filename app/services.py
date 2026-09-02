@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_single_game_price_cents, get_weekly_attendance_capacity
+from app.aliases import resolve_normalized_name
 from app.message_templates import render_weekly_attendance_message
 from app.models import (
     MonthlySubscriber,
@@ -73,6 +74,7 @@ async def apply_monthly_subscribers(
     commit: bool = True,
 ) -> ProcessMessageResponse:
 
+    parsed = await _resolve_monthly_aliases(session, parsed)
     created: list[SubscriberChange] = []
     updated: list[SubscriberChange] = []
     deleted: list[SubscriberChange] = []
@@ -155,6 +157,7 @@ async def apply_weekly_attendance(
     received_at: datetime | None = None,
     commit: bool = True,
 ) -> WeeklyAttendanceResponse:
+    parsed = await _resolve_weekly_aliases(session, parsed)
     attendance = await _get_weekly_attendance(session, game_date=parsed.game_date)
     capacity = attendance.capacity if attendance is not None else get_weekly_attendance_capacity()
     cutoff_at = _build_cutoff_at(parsed.game_date)
@@ -362,6 +365,32 @@ def _has_changes(existing: MonthlySubscriber, line: ParsedSubscriberLine) -> boo
         or existing.normalized_name != line.normalized_name
         or existing.has_paid != line.has_paid
     )
+
+
+async def _resolve_monthly_aliases(session: AsyncSession, parsed: ParsedMonthlySubscribers):
+    lines = [
+        ParsedSubscriberLine(
+            position=line.position, name=line.name,
+            normalized_name=await resolve_normalized_name(session, line.normalized_name)
+            if line.normalized_name else None,
+            has_paid=line.has_paid,
+        )
+        for line in parsed.subscribers
+    ]
+    return ParsedMonthlySubscribers(parsed.month, parsed.year, parsed.title, lines)
+
+
+async def _resolve_weekly_aliases(session: AsyncSession, parsed: ParsedWeeklyAttendance):
+    lines = []
+    for line in parsed.entries:
+        lines.append(ParsedWeeklyAttendanceLine(
+            section=line.section, position=line.position, name=line.name,
+            normalized_name=await resolve_normalized_name(session, line.normalized_name),
+            invited_by=line.invited_by,
+            normalized_invited_by=await resolve_normalized_name(session, line.normalized_invited_by),
+            prebuilt_team_number=line.prebuilt_team_number, is_guest=line.is_guest,
+        ))
+    return ParsedWeeklyAttendance(parsed.game_date, parsed.title, lines)
 
 
 def _change_from_line(line: ParsedSubscriberLine) -> SubscriberChange:

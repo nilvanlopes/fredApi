@@ -11,6 +11,7 @@ from app.conversation_import import (
     record_realtime_processed_message,
 )
 from app.database import get_session
+from app.aliases import create_alias
 from app.message_templates import (
     local_reference_date,
     render_monthly_subscribers_template,
@@ -27,6 +28,8 @@ from app.schemas import (
     WeeklyAttendanceMessageResponse,
     WeeklyAttendanceResponse,
     WeeklyMessageTemplateResponse,
+    PersonAliasRequest,
+    PersonAliasResponse,
 )
 from app.whatsapp_export import WhatsAppExportError
 from app.services import (
@@ -37,6 +40,26 @@ from app.services import (
 )
 
 app = FastAPI(title="Volei Frederico API")
+
+
+@app.post("/person-aliases", response_model=PersonAliasResponse, status_code=201)
+async def add_person_alias(
+    payload: PersonAliasRequest,
+    session: AsyncSession = Depends(get_session),
+) -> PersonAliasResponse:
+    try:
+        row, monthly, weekly, inviter = await create_alias(
+            session, alias=payload.alias, canonical_name=payload.canonical_name
+        )
+        await session.commit()
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return PersonAliasResponse(
+        alias=row.alias, alias_normalized=row.alias_normalized,
+        canonical_name=row.canonical_name, canonical_normalized=row.canonical_normalized,
+        updated_monthly=monthly, updated_weekly=weekly, updated_inviter=inviter,
+    )
 
 
 @app.get("/health")
