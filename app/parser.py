@@ -54,6 +54,7 @@ GUEST_LABEL_RE = re.compile(
     r"\s*\(\s*(?:convidad[oa]|conv\.?)\s*\)?\s*$",
     re.IGNORECASE,
 )
+SELF_GUEST_LABEL_RE = re.compile(r"\s*\(\s*conv\.?\s*\)?\s*$", re.IGNORECASE)
 GUEST_SECTION_RE = re.compile(
     r"^(?:lista\s+(?:de\s+)?)?(?:espera\s+(?:dos?\s+)?)?convidad[oa]s?\s*:?$"
 )
@@ -296,7 +297,10 @@ def parse_weekly_attendance_message(
         guest_label_match = GUEST_LABEL_RE.search(raw_name)
         if guest_label_match:
             is_guest = True
-            raw_name = normalize_spaces(GUEST_LABEL_RE.sub("", raw_name))
+            guest_name = normalize_spaces(GUEST_LABEL_RE.sub("", raw_name))
+            if invited_by is None and SELF_GUEST_LABEL_RE.search(raw_name):
+                invited_by = guest_name
+            raw_name = guest_name
         raw_name = normalize_spaces(TRAILING_ASTERISKS_RE.sub("", raw_name))
         if not raw_name:
             continue

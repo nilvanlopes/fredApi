@@ -133,7 +133,7 @@ def test_parse_weekly_attendance_marks_inline_guest_labels() -> None:
 
     assert [entry.name for entry in parsed.entries] == ["Pessoa", "Pessoa", "Pessoa"]
     assert [entry.is_guest for entry in parsed.entries] == [True, True, True]
-    assert [entry.invited_by for entry in parsed.entries] == [None, None, "Fulano"]
+    assert [entry.invited_by for entry in parsed.entries] == [None, "Pessoa", "Fulano"]
 
 
 def test_parse_implicit_weekly_header_infers_current_or_next_wednesday() -> None:
@@ -188,7 +188,7 @@ def test_parse_weekly_attendance_extracts_prebuilt_team_number() -> None:
     )
 
     assert [(item.name, item.invited_by, item.prebuilt_team_number) for item in parsed.entries] == [
-        ("Leal", None, 3),
+        ("Leal", "Leal", 3),
         ("Mario", "Pyu", 2),
     ]
 
