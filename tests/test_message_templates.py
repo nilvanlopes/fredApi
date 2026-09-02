@@ -87,12 +87,22 @@ def test_render_weekly_attendance_message_keeps_inviter_and_omits_empty_waiting(
                 "invited_by": "Ana Caroline",
             },
         )(),
+        type(
+            "Entry",
+            (),
+            {
+                "name": "Jr",
+                "status": "main",
+                "invited_by": "Jr",
+            },
+        )(),
     ]
 
     assert render_weekly_attendance_message(date(2026, 9, 2), entries) == (
         "LISTA VÔLEI FREDERICO 02/09\n"
         "1. Pyu\n"
-        "2. Renato (conv. Ana Caroline)"
+        "2. Renato (conv. Ana Caroline)\n"
+        "3. Jr (conv)"
     )
 
 

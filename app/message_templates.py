@@ -51,6 +51,8 @@ def render_weekly_attendance_message(game_date: date, entries) -> str:
     def display_name(entry) -> str:
         invited_by = getattr(entry, "invited_by", None)
         if invited_by:
+            if invited_by.strip().casefold() == entry.name.strip().casefold():
+                return f"{entry.name} (conv)"
             return f"{entry.name} (conv. {invited_by})"
         return entry.name
 
