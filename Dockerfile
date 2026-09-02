@@ -16,9 +16,12 @@ COPY alembic ./alembic
 COPY tests ./tests
 COPY alembic.ini ./
 COPY docker-compose.ollama.yml ./
+COPY docker/entrypoint.sh /usr/local/bin/fred-entrypoint
 
 RUN uv sync --frozen --extra dev
 
+RUN chmod +x /usr/local/bin/fred-entrypoint
+
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["/usr/local/bin/fred-entrypoint"]
