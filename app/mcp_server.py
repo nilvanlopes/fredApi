@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_monthly_subscription_price_cents
 from app.aliases import resolve_normalized_name
 from app.database import SessionLocal
-from app.models import MonthlySubscriber, WeeklyAttendance, WeeklyAttendanceEntry
+from app.models import MonthlySubscriber, PersonAlias, WeeklyAttendance, WeeklyAttendanceEntry
 from app.parser import normalize_name
 
 
@@ -83,6 +83,13 @@ class PersonMatch(BaseModel):
 class PersonSearchResult(BaseModel):
     query: str
     matches: list[PersonMatch] = Field(default_factory=list)
+
+
+class PersonAliasesResult(BaseModel):
+    query: str
+    canonical_name: str
+    canonical_normalized: str
+    aliases: list[str] = Field(default_factory=list)
 
 
 class MonthlyUnpaidEntry(BaseModel):
@@ -282,6 +289,30 @@ async def search_person(
             )
 
     return PersonSearchResult(query=name, matches=matches)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_person_aliases(
+    name: Annotated[str, Field(min_length=1, max_length=100, description="Nome padrão ou apelido.")],
+) -> PersonAliasesResult:
+    """Retorna o nome padrão e todos os aliases cadastrados para uma pessoa."""
+    normalized_name = normalize_name(name)
+    async with SessionLocal() as session:
+        canonical_normalized = await resolve_normalized_name(session, normalized_name)
+        alias_result = await session.execute(
+            select(PersonAlias)
+            .where(PersonAlias.canonical_normalized == canonical_normalized)
+            .order_by(PersonAlias.alias_normalized)
+        )
+        aliases = alias_result.scalars().all()
+
+    canonical_name = aliases[0].canonical_name if aliases else name.strip()
+    return PersonAliasesResult(
+        query=name,
+        canonical_name=canonical_name,
+        canonical_normalized=canonical_normalized,
+        aliases=[alias.alias for alias in aliases],
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
