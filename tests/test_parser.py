@@ -181,6 +181,16 @@ def test_parse_weekly_attendance_message_normalizes_invisible_chars() -> None:
     assert parsed.entries[1].normalized_invited_by == "pyu"
 
 
+def test_parse_weekly_attendance_removes_time_annotation_from_name() -> None:
+    parsed = parse_weekly_attendance_message(
+        "LISTA VOLEI FREDERICO 03/06\n19. Jéssica (20h30)\n",
+        received_at=datetime(2026, 6, 2, 21, 0, 0),
+    )
+
+    assert parsed.entries[0].name == "Jéssica"
+    assert parsed.entries[0].normalized_name == "jessica"
+
+
 def test_parse_weekly_attendance_extracts_prebuilt_team_number() -> None:
     parsed = parse_weekly_attendance_message(
         "LISTA VOLEI FREDERICO 03/06\n1. Leal(conv)3️⃣\n2. Mario (conv Pyu)2️⃣\n",

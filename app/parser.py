@@ -50,6 +50,10 @@ TRAILING_INVITED_BY_RE = re.compile(
 EDITED_MARKER_RE = re.compile(r"\s*<mensagem\s+editada>\s*$", re.IGNORECASE)
 TRAILING_ASTERISKS_RE = re.compile(r"\s*\*+\s*$")
 TENTATIVE_RE = re.compile(r"\s*\(\s*talvez\s*\)\s*$", re.IGNORECASE)
+TIME_ANNOTATION_RE = re.compile(
+    r"\s*\(\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)\s*\)\s*$",
+    re.IGNORECASE,
+)
 GUEST_LABEL_RE = re.compile(
     r"\s*\(\s*(?:convidad[oa]|conv\.?)\s*\)?\s*$",
     re.IGNORECASE,
@@ -294,6 +298,7 @@ def parse_weekly_attendance_message(
                 is_guest = True
 
         raw_name = normalize_spaces(TENTATIVE_RE.sub("", raw_name))
+        raw_name = normalize_spaces(TIME_ANNOTATION_RE.sub("", raw_name))
         guest_label_match = GUEST_LABEL_RE.search(raw_name)
         if guest_label_match:
             is_guest = True
