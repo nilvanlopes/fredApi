@@ -249,6 +249,14 @@ Variáveis do importador:
 - `OLLAMA_CONTAINER_NAME`
 - `OLLAMA_IMAGE`
 - `OLLAMA_VOLUME`
+- `OLLAMA_NETWORK`
+
+O Ollama usado pelo assistente do WhatsApp permanece sob demanda. O workflow
+chama `POST /internal/ollama/start` antes do agente, que inicia o container
+`fred-ollama`, garante o modelo e o conecta à rede Docker `n8n`; depois da
+resposta chama `POST /internal/ollama/stop` para parar e remover somente um
+container iniciado por aquela execução. A credencial Ollama do n8n deve usar a
+URL `http://fred-ollama:11434`.
 
 Valor padrão para Docker Compose:
 

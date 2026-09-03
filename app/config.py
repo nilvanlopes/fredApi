@@ -106,6 +106,10 @@ def get_ollama_volume() -> str:
     return os.getenv("OLLAMA_VOLUME", "ollama_ollama-data").strip() or "ollama_ollama-data"
 
 
+def get_ollama_network() -> str:
+    return os.getenv("OLLAMA_NETWORK", "n8n").strip() or "n8n"
+
+
 def _read_bool_env(name: str, *, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:

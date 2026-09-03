@@ -18,6 +18,7 @@ from app.config import (
     get_ollama_docker_socket,
     get_ollama_enable_gpu,
     get_ollama_image,
+    get_ollama_network,
     get_ollama_manage_service,
     get_ollama_poll_interval_seconds,
     get_ollama_pull_model_when_missing,
@@ -37,6 +38,72 @@ class OllamaServiceError(RuntimeError):
     pass
 
 
+async def start_ollama_for_agent() -> bool:
+    """Start the ephemeral Ollama and return whether this call owns it."""
+    config = resolve_ollama_service_config()
+    if not config.manage_service or not config.model_name:
+        raise OllamaServiceError("gerenciamento on-demand do Ollama está desabilitado")
+    if await asyncio.to_thread(_is_ollama_ready, config.api_base_url):
+        if config.pull_model_when_missing:
+            await asyncio.to_thread(
+                _ensure_model_available,
+                model_name=config.model_name,
+                base_url=config.api_base_url,
+                compose_file=config.compose_file,
+                config=config,
+                runner=subprocess.run,
+            )
+        return False
+
+    try:
+        if await asyncio.to_thread(_docker_socket_available, config.docker_socket):
+            await asyncio.to_thread(_start_ollama_with_docker_api, config)
+        elif config.compose_file is not None and config.compose_file.exists():
+            await asyncio.to_thread(
+                _run_compose,
+                ["up", "-d", "ollama"],
+                compose_file=config.compose_file,
+                runner=subprocess.run,
+            )
+        else:
+            raise OllamaServiceError("nenhum método de inicialização do Ollama está disponível")
+        await asyncio.to_thread(
+            _wait_until_ready,
+            base_url=config.api_base_url,
+            timeout_seconds=config.startup_timeout_seconds,
+            poll_interval_seconds=config.poll_interval_seconds,
+            sleeper=time.sleep,
+        )
+        if config.pull_model_when_missing:
+            await asyncio.to_thread(
+                _ensure_model_available,
+                model_name=config.model_name,
+                base_url=config.api_base_url,
+                compose_file=config.compose_file,
+                config=config,
+                runner=subprocess.run,
+            )
+        return True
+    except Exception:
+        await stop_ollama_after_agent(True)
+        raise
+
+
+async def stop_ollama_after_agent(started_by_us: bool) -> None:
+    if not started_by_us:
+        return
+    config = resolve_ollama_service_config()
+    if await asyncio.to_thread(_docker_socket_available, config.docker_socket):
+        await asyncio.to_thread(_stop_ollama_with_docker_api, config)
+    elif config.compose_file is not None:
+        await asyncio.to_thread(
+            _run_compose,
+            ["down"],
+            compose_file=config.compose_file,
+            runner=subprocess.run,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaServiceConfig:
     api_base_url: str
@@ -46,6 +113,7 @@ class OllamaServiceConfig:
     container_name: str
     image: str
     volume: str
+    network: str
     manage_service: bool
     shutdown_when_done: bool
     pull_model_when_missing: bool
@@ -63,6 +131,7 @@ def resolve_ollama_service_config() -> OllamaServiceConfig:
         container_name=get_ollama_container_name(),
         image=get_ollama_image(),
         volume=get_ollama_volume(),
+        network=get_ollama_network(),
         manage_service=get_ollama_manage_service(),
         shutdown_when_done=get_ollama_shutdown_when_done(),
         pull_model_when_missing=get_ollama_pull_model_when_missing(),
@@ -306,15 +375,35 @@ def _start_ollama_with_docker_api(config: OllamaServiceConfig) -> None:
             expected_statuses={201},
         )
         container_id = create_response.json()["Id"]
+        existing_data = None
     else:
         _ensure_docker_success(existing, expected_statuses={200})
         container_id = existing.json()["Id"]
+        existing_data = existing.json()
 
     _docker_request(
         config,
         "POST",
         f"/containers/{container_id}/start",
         expected_statuses={204, 304},
+    )
+    _ensure_ollama_network(config, container_id, existing=existing_data)
+
+
+def _ensure_ollama_network(
+    config: OllamaServiceConfig,
+    container_id: str,
+    existing: dict | None,
+) -> None:
+    networks = (existing or {}).get("NetworkSettings", {}).get("Networks", {})
+    if config.network in networks:
+        return
+    _docker_request(
+        config,
+        "POST",
+        f"/networks/{config.network}/connect",
+        json={"Container": container_id, "EndpointConfig": {"Aliases": [config.container_name]}},
+        expected_statuses={200},
     )
 
 

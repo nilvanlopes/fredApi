@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_conversation_import_max_bytes
@@ -17,7 +18,11 @@ from app.message_templates import (
     render_monthly_subscribers_template,
     render_weekly_attendance_template,
 )
-from app.ollama_service import OllamaServiceError
+from app.ollama_service import (
+    OllamaServiceError,
+    start_ollama_for_agent,
+    stop_ollama_after_agent,
+)
 from app.parser import ParseError, parse_monthly_subscribers_message
 from app.schemas import (
     ConversationImportResponse,
@@ -40,6 +45,28 @@ from app.services import (
 )
 
 app = FastAPI(title="Volei Frederico API")
+
+
+class OllamaStopRequest(BaseModel):
+    started_by_us: bool = False
+
+
+@app.post("/internal/ollama/start")
+async def start_ephemeral_ollama() -> dict[str, bool]:
+    try:
+        started_by_us = await start_ollama_for_agent()
+    except OllamaServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"started_by_us": started_by_us}
+
+
+@app.post("/internal/ollama/stop")
+async def stop_ephemeral_ollama(payload: OllamaStopRequest) -> dict[str, bool]:
+    try:
+        await stop_ollama_after_agent(payload.started_by_us)
+    except OllamaServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"stopped": payload.started_by_us}
 
 
 @app.post("/person-aliases", response_model=PersonAliasResponse, status_code=201)
