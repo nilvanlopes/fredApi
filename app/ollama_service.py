@@ -423,6 +423,10 @@ def _build_ollama_container_create_payload(config: OllamaServiceConfig) -> dict:
         ]
     return {
         "Image": config.image,
+        "Env": [
+            "OLLAMA_HOST=0.0.0.0:11434",
+            "OLLAMA_KEEP_ALIVE=24h",
+        ],
         "ExposedPorts": {"11434/tcp": {}},
         "HostConfig": host_config,
     }
