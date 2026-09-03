@@ -3,8 +3,7 @@ services:
     image: fred-api:latest
     env_file:
       - .env
-    command: ["fred-mcp"]
-    stdin_open: true
+    command: ["fred-mcp-http"]
     tty: false
     read_only: true
     tmpfs:
@@ -14,4 +13,13 @@ services:
     cap_drop:
       - ALL
     networks:
-      - fred
+      fred:
+        aliases:
+          - fred-mcp
+      n8n:
+
+networks:
+  fred:
+    external: true
+  n8n:
+    external: true

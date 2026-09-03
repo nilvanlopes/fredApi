@@ -27,6 +27,7 @@ include = ["app*"]
 
 [project.scripts]
 fred-mcp = "app.mcp_server:main"
+fred-mcp-http = "app.mcp_server:main_http"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
