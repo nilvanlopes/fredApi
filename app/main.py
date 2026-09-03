@@ -1,7 +1,8 @@
 from datetime import date, datetime, timezone
+import os
 from typing import Literal
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,7 +52,15 @@ class OllamaStopRequest(BaseModel):
     started_by_us: bool = False
 
 
-@app.post("/internal/ollama/start")
+async def require_internal_agent_key(
+    x_fred_agent_key: str | None = Header(default=None),
+) -> None:
+    expected = os.getenv("FRED_AGENT_KEY", "").strip()
+    if not expected or x_fred_agent_key != expected:
+        raise HTTPException(status_code=401, detail="chave interna inválida")
+
+
+@app.post("/internal/ollama/start", dependencies=[Depends(require_internal_agent_key)])
 async def start_ephemeral_ollama() -> dict[str, bool]:
     try:
         started_by_us = await start_ollama_for_agent()
@@ -60,7 +69,7 @@ async def start_ephemeral_ollama() -> dict[str, bool]:
     return {"started_by_us": started_by_us}
 
 
-@app.post("/internal/ollama/stop")
+@app.post("/internal/ollama/stop", dependencies=[Depends(require_internal_agent_key)])
 async def stop_ephemeral_ollama(payload: OllamaStopRequest) -> dict[str, bool]:
     try:
         await stop_ollama_after_agent(payload.started_by_us)
