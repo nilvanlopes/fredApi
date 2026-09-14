@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: ollama/ollama:latest@sha256:075246f72d4109385b4a01c3ac8e9cbd26a0bcb21cd7aa30edbccd24e1b3180c
+    image: ollama/ollama:latest@sha256:684d8674b4315fa18f4f0e973a118ec2652ed96f67563277839985175858e0ba
     container_name: fred-ollama
     ports:
       - "11434:11434"
