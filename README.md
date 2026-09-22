@@ -193,25 +193,23 @@ As ferramentas disponíveis são:
 - `search_person`: busca uma pessoa nas listas mensais e semanais.
 
 O servidor roda dentro do Docker e usa a mesma `DATABASE_URL` do serviço da
-API. Depois de subir o Fred e construir a imagem, o cliente MCP pode iniciar o
-servidor por stdio com:
+API. O deploy principal da stack também sobe um serviço MCP HTTP interno,
+disponível para clientes conectados à rede `n8n` em `http://fred-mcp:8000/mcp`.
+
+Para iniciar uma instância temporária do endpoint HTTP, use:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.mcp.yml run --rm -T mcp
 ```
 
-Para clientes que aceitam configuração de comando, use o equivalente:
+Para clientes que aceitam configuração por URL e estão conectados à rede `n8n`,
+use o endpoint persistente:
 
 ```json
 {
   "mcpServers": {
     "fred": {
-      "command": "docker",
-      "args": [
-        "compose", "-f", "/caminho/para/fred/docker-compose.yml",
-        "-f", "/caminho/para/fred/docker-compose.mcp.yml",
-        "run", "--rm", "-T", "mcp"
-      ]
+      "url": "http://fred-mcp:8000/mcp"
     }
   }
 }
@@ -278,6 +276,7 @@ docker stack deploy --detach=true -c docker-compose.yml fred
 Isso sobe:
 
 - a API em `http://localhost:8001` no host, encaminhando para `8000` dentro do container
+- o MCP HTTP interno em `fred-mcp:8000/mcp`, na rede Docker do n8n
 - o PostgreSQL em `localhost:5433`
 
 Se o Swarm ja estiver inicializado ou a rede ja existir, os dois primeiros

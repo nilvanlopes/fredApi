@@ -51,6 +51,39 @@ services:
         aliases:
           - fred-api
 
+  mcp:
+    image: fred-api:latest
+    env_file:
+      - .env
+    command: ["fred-mcp-http"]
+    tty: false
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 0
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks:
+      fred:
+        aliases:
+          - fred-mcp
+      n8n:
+
   postgres:
     image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
