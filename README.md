@@ -298,7 +298,7 @@ docker service logs -f fred_api
 
 ## Rede local
 
-Quando a API é consumida pelo Traefik local, ela também entra na rede externa `traefik-local` e fica acessível pelo alias `fred-api` dentro do Docker Swarm. Nessa rota, o acesso externo continua em `http://fred.localnetwork:8181`.
+Quando a API é consumida pelo Traefik local, ela também entra na rede externa `traefik-local` e fica acessível pelo alias `fred-api` dentro do Docker Swarm. Nessa rota, o acesso externo continua em `http://fred.localnetwork`.
 
 Para subir esse modo, use `make deploy-fred` no repositório raiz `docker/`. Esse fluxo publica o Fred como stack no Swarm para que o Traefik local consiga resolver o alias via rede overlay.
 

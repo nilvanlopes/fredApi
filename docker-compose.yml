@@ -9,11 +9,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - target: 8000
-        published: 8001
-        protocol: tcp
-        mode: ingress
     deploy:
       mode: replicated
       replicas: 1
@@ -90,8 +85,6 @@ services:
       POSTGRES_DB: fred
       POSTGRES_USER: fred
       POSTGRES_PASSWORD: fred
-    ports:
-      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     deploy:
