@@ -5,6 +5,11 @@ services:
       context: .
     env_file:
       - .env
+    environment:
+      FRED_PUBLIC_URL: https://fred.nilvanlopes.com
+      AUTHENTIK_BASE_URL: https://login-fred.nilvanlopes.com
+      AUTHENTIK_INTERNAL_URL: http://server:9000
+      AUTHENTIK_AUTH_URL: http://authentik-outpost-fred_proxy:9000/outpost.goauthentik.io/auth/traefik
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -45,9 +50,18 @@ services:
       n8n:
         aliases:
           - fred-api
+      authentik-internal:
+      traefik-public:
+      floci-internal:
 
   mcp:
     image: fred-api:latest
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; url='http://127.0.0.1:8000/mcp'; headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}; data=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'healthcheck','version':'1'}}}).encode(); response=urllib.request.urlopen(urllib.request.Request(url,data=data,headers=headers),timeout=4); session=response.headers.get('Mcp-Session-Id'); response.close(); session and urllib.request.urlopen(urllib.request.Request(url,method='DELETE',headers={'Mcp-Session-Id':session,'MCP-Protocol-Version':'2025-06-18'}),timeout=4).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     command: ["fred-mcp-http"]
@@ -78,6 +92,56 @@ services:
         aliases:
           - fred-mcp
       n8n:
+
+  web:
+    image: fred-web:latest
+    build:
+      context: ./frontend
+    read_only: true
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      replicas: 1
+      labels:
+        - 'traefik.enable=true'
+        - 'traefik.swarm.network=traefik-public'
+        # Only the lightweight logout UI is served by Fred on the Authentik host.
+        - 'traefik.http.routers.fred-logout-ui.rule=Host(`login-fred.nilvanlopes.com`) && (Method(`GET`) || Method(`HEAD`)) && ((Path(`/if/flow/fred-invalidation-flow/`) && !Query(`fred_standard_ui`, `1`)) || Path(`/authentik-invalidation.js`))'
+        - 'traefik.http.routers.fred-logout-ui.entrypoints=websecure'
+        - 'traefik.http.routers.fred-logout-ui.priority=160'
+        - 'traefik.http.routers.fred-logout-ui.tls.certresolver=cloudflare'
+        - 'traefik.http.routers.fred-logout-ui.middlewares=crowdsec@file,authentik-headers@swarm,fred-logout-assets'
+        - 'traefik.http.middlewares.fred-logout-assets.headers.customrequestheaders.Cookie='
+        - 'traefik.http.middlewares.fred-logout-assets.headers.customrequestheaders.Authorization='
+        - 'traefik.http.middlewares.fred-logout-assets.headers.customrequestheaders.Referer='
+        - 'traefik.http.routers.fred-logout-ui.service=fred-logout-ui'
+        - 'traefik.http.services.fred-logout-ui.loadbalancer.server.port=8080'
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+    networks:
+      - fred
+      - traefik-public
 
   postgres:
     image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
@@ -118,3 +182,11 @@ networks:
     external: true
   n8n:
     external: true
+  traefik-public:
+    external: true
+  authentik-internal:
+    external: true
+    name: authentik_authentik-internal
+  floci-internal:
+    external: true
+    name: floci-internal

@@ -1,0 +1,95 @@
+.games-calendar {
+  max-width: 38rem;
+  margin-inline: auto;
+  padding: 0 clamp(12px, 3vw, 24px) 20px;
+}
+
+.games-calendar-header,
+.games-calendar-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.games-calendar-header {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0 14px;
+}
+
+.games-calendar-header h3 {
+  color: var(--green);
+  font-size: clamp(14px, 3vw, 21px);
+  text-transform: capitalize;
+}
+
+.games-calendar table {
+  table-layout: fixed;
+}
+
+.games-calendar th,
+.games-calendar td {
+  padding: 3px;
+  border: 0;
+  background: none;
+  text-align: center;
+}
+
+.games-calendar th {
+  padding-block: 8px;
+  font-size: 10px;
+  color: #54695a;
+}
+
+.games-calendar-day {
+  position: relative;
+  display: inline-grid;
+  width: 100%;
+  max-width: 48px;
+  min-height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: #34483b;
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.games-calendar-adjacent {
+  color: #87938b;
+}
+
+.games-calendar-day[aria-current="date"] {
+  border-color: #71917a;
+}
+
+.games-calendar-match {
+  color: var(--green);
+  background: #eef5e9;
+  font-weight: 700;
+}
+
+.games-calendar-match:hover {
+  background: #e2efdc;
+}
+
+.games-calendar-match[aria-pressed="true"] {
+  border-color: var(--green);
+  background: var(--green);
+  color: white;
+}
+
+.games-calendar-dot {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: currentColor;
+}

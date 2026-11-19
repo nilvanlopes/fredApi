@@ -2,7 +2,7 @@ from logging.config import fileConfig
 import os
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.models import Base
@@ -38,6 +38,8 @@ def do_run_migrations(connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
+        connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(128) NOT NULL PRIMARY KEY)"))
+        connection.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE varchar(128)"))
         context.run_migrations()
 
 

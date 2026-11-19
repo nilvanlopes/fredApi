@@ -43,3 +43,6 @@ Thumbs.db
 postgres_data/
 *.log
 
+# The web service has its own build context.
+frontend/
+

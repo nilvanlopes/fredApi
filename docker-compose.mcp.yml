@@ -1,6 +1,12 @@
 services:
   mcp:
     image: fred-api:latest
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; url='http://127.0.0.1:8000/mcp'; headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}; data=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'healthcheck','version':'1'}}}).encode(); response=urllib.request.urlopen(urllib.request.Request(url,data=data,headers=headers),timeout=4); session=response.headers.get('Mcp-Session-Id'); response.close(); session and urllib.request.urlopen(urllib.request.Request(url,method='DELETE',headers={'Mcp-Session-Id':session,'MCP-Protocol-Version':'2025-06-18'}),timeout=4).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     command: ["fred-mcp-http"]
