@@ -12,6 +12,12 @@ class ProcessMessageRequest(BaseModel):
     message_id: str | None = None
     sender_id: str | None = None
     sender_name: str | None = None
+    sender_contact_name: str | None = None
+
+
+class RecordSentMessageRequest(ProcessMessageRequest):
+    reference_date: date | None = None
+    list_type: Literal["monthly_subscribers", "weekly_attendance"] | None = None
 
 
 class PersonAliasRequest(BaseModel):
@@ -64,6 +70,8 @@ class WeeklyAttendanceResponse(BaseModel):
     cutoff_at: datetime
     capacity: int
     entries: list[WeeklyAttendanceEntryResponse]
+    correction_text: str | None = None
+    correction_notice: str | None = None
 
 
 class PromotionResult(BaseModel):

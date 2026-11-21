@@ -127,13 +127,14 @@ def test_parse_weekly_attendance_marks_inline_guest_labels() -> None:
 1. Pessoa (convidado)
 2. Pessoa (conv)
 3. Pessoa (conv Fulano)
+4. Jeff ( conv )
 """,
         received_at=datetime(2026, 6, 2, 21, 0, 0),
     )
 
-    assert [entry.name for entry in parsed.entries] == ["Pessoa", "Pessoa", "Pessoa"]
-    assert [entry.is_guest for entry in parsed.entries] == [True, True, True]
-    assert [entry.invited_by for entry in parsed.entries] == [None, "Pessoa", "Fulano"]
+    assert [entry.name for entry in parsed.entries] == ["Pessoa", "Pessoa", "Pessoa", "Jeff"]
+    assert [entry.is_guest for entry in parsed.entries] == [True, True, True, True]
+    assert [entry.invited_by for entry in parsed.entries] == [None, "Pessoa", "Fulano", "Jeff"]
 
 
 def test_parse_implicit_weekly_header_infers_current_or_next_wednesday() -> None:
@@ -203,7 +204,7 @@ def test_parse_weekly_attendance_extracts_prebuilt_team_number() -> None:
     ]
 
 
-def test_parse_weekly_attendance_ignores_check_mark_after_annotations() -> None:
+def test_parse_weekly_attendance_captures_payment_marks_after_annotations() -> None:
     parsed = parse_weekly_attendance_message(
         "LISTA VOLEI FREDERICO 03/06\n"
         "1. Thiago (conv pyu) 1️⃣ ✅\n"
@@ -221,6 +222,7 @@ def test_parse_weekly_attendance_ignores_check_mark_after_annotations() -> None:
         ("Jerffeson", None, None),
         ("Higor", "Murilo", None),
     ]
+    assert [item.has_paid for item in parsed.entries] == [True, True, False, False, False]
 
 
 def test_parse_legacy_weekly_header_uses_message_date_and_cleans_annotations() -> None:
@@ -314,6 +316,7 @@ Convidados
         ("guests", 1, "Daniel"),
         ("guests", 2, "Mario"),
     ]
+    assert parsed.numbering_corrected is True
 
 
 def test_parse_weekly_attendance_ignores_zero_position_and_accepts_plain_guest_line() -> None:

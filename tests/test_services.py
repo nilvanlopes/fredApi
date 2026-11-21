@@ -90,3 +90,8 @@ def test_get_weekly_attendance_message_renders_current_persisted_state() -> None
         "Convidados\n"
         "1. Aguardando"
     )
+
+
+def test_after_cutoff_follows_current_list_order_instead_of_monthly_priority():
+    states = _build_entry_states([_line(1,"Avulso"),_line(2,"Mensalista")],monthly_names=Counter({"mensalista":1}),capacity=1,after_cutoff=True)
+    assert [s.status for s in states] == ["main","waiting"]

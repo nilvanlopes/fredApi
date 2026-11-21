@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_monthly_subscription_price_cents
 from app.aliases import resolve_normalized_name
 from app.database import SessionLocal
-from app.models import MonthlySubscriber, PersonAlias, WeeklyAttendance, WeeklyAttendanceEntry
+from app.models import MonthlySubscriber, PersonAlias, WeeklyAttendance, WeeklyAttendanceEntry, Charge, Person
 from app.parser import normalize_name
 
 
@@ -43,6 +43,7 @@ class WeeklyEntry(BaseModel):
     owes_single_payment: bool
     single_payment_amount_cents: int | None = None
     prebuilt_team_number: int | None = None
+    charge_status: Literal["pending","paid","cancelled","waived"] | None = None
 
 
 class WeeklyAttendanceResult(BaseModel):
@@ -64,6 +65,7 @@ class Subscriber(BaseModel):
     position: int
     name: str
     has_paid: bool
+    charge_status: Literal["pending","paid","cancelled","waived"] = "pending"
 
 
 class PersonMatch(BaseModel):
@@ -76,6 +78,7 @@ class PersonMatch(BaseModel):
     status: Literal["main", "waiting"] | None = None
     is_monthly_subscriber: bool | None = None
     has_paid: bool | None = None
+    charge_status: Literal["pending","paid","cancelled","waived"] | None = None
     owes_single_payment: bool | None = None
     single_payment_amount_cents: int | None = None
 
@@ -130,14 +133,15 @@ def _resolve_wednesday(reference_date: date | None) -> date:
     return current + timedelta(days=(2 - current.weekday()) % 7)
 
 
-def _entry_response(entry: WeeklyAttendanceEntry, position: int) -> WeeklyEntry:
+def _entry_response(entry: WeeklyAttendanceEntry, position: int, charge_status: str | None = None) -> WeeklyEntry:
     return WeeklyEntry(
         position=position,
         source_section=entry.source_section,
         name=entry.name,
         invited_by=entry.invited_by,
         is_monthly_subscriber=entry.is_monthly_subscriber,
-        owes_single_payment=entry.owes_single_payment,
+        owes_single_payment=charge_status=="pending" if charge_status is not None else entry.owes_single_payment,
+        charge_status=charge_status,
         single_payment_amount_cents=entry.single_payment_amount_cents,
         prebuilt_team_number=entry.prebuilt_team_number,
     )
@@ -159,11 +163,13 @@ async def get_weekly_attendance(
             .where(WeeklyAttendance.game_date == resolved_date)
         )
         attendance = result.scalar_one_or_none()
+        charges=(await session.scalars(select(Charge).where(Charge.type=="single",Charge.reference_date==resolved_date))).all()
+        statuses={c.person_id:c.status for c in charges}
 
     if attendance is None:
         return WeeklyAttendanceResult(found=False, game_date=resolved_date)
 
-    entries = sorted(attendance.entries, key=lambda entry: entry.display_order)
+    entries = sorted([entry for entry in attendance.entries if entry.deleted_at is None], key=lambda entry: entry.display_order)
     main = [entry for entry in entries if entry.status == "main"]
     waiting = [entry for entry in entries if entry.status == "waiting"]
     return WeeklyAttendanceResult(
@@ -171,9 +177,9 @@ async def get_weekly_attendance(
         game_date=attendance.game_date,
         capacity=attendance.capacity,
         cutoff_at=attendance.cutoff_at,
-        main=[_entry_response(entry, position) for position, entry in enumerate(main, 1)],
+        main=[_entry_response(entry, position, statuses.get(entry.person_id)) for position, entry in enumerate(main, 1)],
         waiting=[
-            _entry_response(entry, position) for position, entry in enumerate(waiting, 1)
+            _entry_response(entry, position, statuses.get(entry.person_id)) for position, entry in enumerate(waiting, 1)
         ],
     )
 
@@ -190,10 +196,13 @@ async def get_monthly_subscribers(
             .where(
                 MonthlySubscriber.month == month,
                 MonthlySubscriber.year == year,
+                MonthlySubscriber.deleted_at.is_(None),
             )
             .order_by(MonthlySubscriber.position)
         )
         subscribers = result.scalars().all()
+        charges=(await session.scalars(select(Charge).where(Charge.type=="monthly",func.extract("month",Charge.reference_date)==month,func.extract("year",Charge.reference_date)==year))).all()
+        statuses={c.person_id:c.status for c in charges}
 
     return MonthlySubscriberResult(
         month=month,
@@ -203,6 +212,7 @@ async def get_monthly_subscribers(
                 position=subscriber.position,
                 name=subscriber.name,
                 has_paid=subscriber.has_paid,
+                charge_status=statuses.get(subscriber.person_id,"paid" if subscriber.has_paid else "pending"),
             )
             for subscriber in subscribers
         ],
@@ -242,15 +252,17 @@ async def search_person(
     async with SessionLocal() as session:
         normalized_name = await resolve_normalized_name(session, normalized_name) or normalized_name
         monthly_query = select(MonthlySubscriber).where(
-            MonthlySubscriber.normalized_name.contains(normalized_name)
+            MonthlySubscriber.normalized_name.contains(normalized_name),
+            MonthlySubscriber.deleted_at.is_(None),
         )
         if unpaid_only:
-            monthly_query = monthly_query.where(MonthlySubscriber.has_paid.is_(False))
+            monthly_query = monthly_query.join(Charge,(Charge.person_id==MonthlySubscriber.person_id)&(Charge.type=="monthly")&(func.extract("month",Charge.reference_date)==MonthlySubscriber.month)&(func.extract("year",Charge.reference_date)==MonthlySubscriber.year)).where(Charge.status=="pending")
         monthly_query = monthly_query.order_by(
             MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position
         )
         monthly_result = await session.execute(monthly_query)
         for subscriber in monthly_result.scalars():
+            charge=await session.scalar(select(Charge).where(Charge.person_id==subscriber.person_id,Charge.type=="monthly",Charge.reference_date==date(subscriber.year,subscriber.month,1)))
             matches.append(
                 PersonMatch(
                     list_type="monthly_subscriber",
@@ -259,6 +271,7 @@ async def search_person(
                     position=subscriber.position,
                     name=subscriber.name,
                     has_paid=subscriber.has_paid,
+                    charge_status=charge.status if charge else ("paid" if subscriber.has_paid else "pending"),
                 )
             )
 
@@ -266,15 +279,16 @@ async def search_person(
             select(WeeklyAttendanceEntry)
             .options(selectinload(WeeklyAttendanceEntry.attendance))
             .join(WeeklyAttendance)
-            .where(WeeklyAttendanceEntry.normalized_name.contains(normalized_name))
+            .where(WeeklyAttendanceEntry.normalized_name.contains(normalized_name), WeeklyAttendanceEntry.deleted_at.is_(None))
             .order_by(WeeklyAttendance.game_date, WeeklyAttendanceEntry.display_order)
         )
         if unpaid_only:
-            weekly_query = weekly_query.where(WeeklyAttendanceEntry.owes_single_payment.is_(True))
+            weekly_query = weekly_query.join(Charge,(Charge.person_id==WeeklyAttendanceEntry.person_id)&(Charge.type=="single")&(Charge.reference_date==WeeklyAttendance.game_date)).where(Charge.status=="pending")
         if game_date is not None:
             weekly_query = weekly_query.where(WeeklyAttendance.game_date == game_date)
         weekly_result = await session.execute(weekly_query)
         for entry in weekly_result.scalars():
+            charge=await session.scalar(select(Charge).where(Charge.person_id==entry.person_id,Charge.type=="single",Charge.reference_date==entry.attendance.game_date))
             matches.append(
                 PersonMatch(
                     list_type="weekly_attendance",
@@ -283,7 +297,8 @@ async def search_person(
                     name=entry.name,
                     status=entry.status,
                     is_monthly_subscriber=entry.is_monthly_subscriber,
-                    owes_single_payment=entry.owes_single_payment,
+                    owes_single_payment=charge.status=="pending" if charge else entry.owes_single_payment,
+                    charge_status=charge.status if charge else None,
                     single_payment_amount_cents=entry.single_payment_amount_cents,
                 )
             )
@@ -326,70 +341,20 @@ async def get_person_payment_summary(
         raise ValueError("end_date deve ser maior ou igual a start_date")
 
     normalized_name = normalize_name(name)
-    monthly_unpaid: list[MonthlyUnpaidEntry] = []
-    single_payment_unpaid: list[SinglePaymentUnpaidEntry] = []
-    monthly_amount_cents = get_monthly_subscription_price_cents()
-
+    monthly_unpaid, single_payment_unpaid = [], []
     async with SessionLocal() as session:
         normalized_name = await resolve_normalized_name(session, normalized_name) or normalized_name
-        monthly_result = await session.execute(
-            select(MonthlySubscriber)
-            .where(
-                MonthlySubscriber.normalized_name.contains(normalized_name),
-                MonthlySubscriber.has_paid.is_(False),
-            )
-            .order_by(MonthlySubscriber.year, MonthlySubscriber.month, MonthlySubscriber.position)
-        )
-        for subscriber in monthly_result.scalars():
-            reference = date(subscriber.year, subscriber.month, 1)
-            if start_date <= reference <= end_date:
-                monthly_unpaid.append(
-                    MonthlyUnpaidEntry(
-                        month=subscriber.month,
-                        year=subscriber.year,
-                        position=subscriber.position,
-                        name=subscriber.name,
-                        amount_cents=monthly_amount_cents,
-                    )
-                )
-
-        weekly_result = await session.execute(
-            select(WeeklyAttendanceEntry)
-            .options(selectinload(WeeklyAttendanceEntry.attendance))
-            .join(WeeklyAttendance)
-            .where(
-                WeeklyAttendanceEntry.normalized_name.contains(normalized_name),
-                WeeklyAttendanceEntry.owes_single_payment.is_(True),
-                WeeklyAttendance.game_date >= start_date,
-                WeeklyAttendance.game_date <= end_date,
-            )
-            .order_by(WeeklyAttendance.game_date, WeeklyAttendanceEntry.display_order)
-        )
-        for entry in weekly_result.scalars():
-            single_payment_unpaid.append(
-                SinglePaymentUnpaidEntry(
-                    game_date=entry.attendance.game_date,
-                    position=entry.source_position,
-                    name=entry.name,
-                    source_section=entry.source_section,
-                    status=entry.status,
-                    is_monthly_subscriber=entry.is_monthly_subscriber,
-                    amount_cents=entry.single_payment_amount_cents or 0,
-                )
-            )
-
-    monthly_total = sum(entry.amount_cents for entry in monthly_unpaid)
-    single_payment_total = sum(entry.amount_cents for entry in single_payment_unpaid)
-    return PersonPaymentSummary(
-        query=name,
-        start_date=start_date,
-        end_date=end_date,
-        monthly_unpaid=monthly_unpaid,
-        single_payment_unpaid=single_payment_unpaid,
-        monthly_unpaid_total_cents=monthly_total,
-        single_payment_unpaid_total_cents=single_payment_total,
-        total_unpaid_cents=monthly_total + single_payment_total,
-    )
+        rows=(await session.execute(select(Charge,Person).join(Person,Person.id==Charge.person_id).where(Person.normalized_name.contains(normalized_name),Charge.status=="pending",Charge.reference_date>=start_date,Charge.reference_date<=end_date).order_by(Charge.reference_date))).all()
+        for charge,person in rows:
+            if charge.type=="monthly":
+                subscriber=await session.scalar(select(MonthlySubscriber).where(MonthlySubscriber.person_id==person.id,MonthlySubscriber.month==charge.reference_date.month,MonthlySubscriber.year==charge.reference_date.year).limit(1))
+                monthly_unpaid.append(MonthlyUnpaidEntry(month=charge.reference_date.month,year=charge.reference_date.year,position=subscriber.position if subscriber else 1,name=person.name,amount_cents=charge.amount_cents))
+            else:
+                entry=await session.scalar(select(WeeklyAttendanceEntry).join(WeeklyAttendance).where(WeeklyAttendanceEntry.person_id==person.id,WeeklyAttendance.game_date==charge.reference_date).limit(1))
+                single_payment_unpaid.append(SinglePaymentUnpaidEntry(game_date=charge.reference_date,position=entry.source_position if entry else 1,name=person.name,source_section=entry.source_section if entry else "main",status=entry.status if entry else "main",is_monthly_subscriber=entry.is_monthly_subscriber if entry else False,amount_cents=charge.amount_cents))
+    monthly_total=sum(entry.amount_cents for entry in monthly_unpaid)
+    single_total=sum(entry.amount_cents for entry in single_payment_unpaid)
+    return PersonPaymentSummary(query=name,start_date=start_date,end_date=end_date,monthly_unpaid=monthly_unpaid,single_payment_unpaid=single_payment_unpaid,monthly_unpaid_total_cents=monthly_total,single_payment_unpaid_total_cents=single_total,total_unpaid_cents=monthly_total+single_total)
 
 
 def main() -> None:

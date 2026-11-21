@@ -40,7 +40,7 @@ IMPLICIT_WEEKLY_HEADER_RE = re.compile(
 LINE_RE = re.compile(r"^\s*(\d+)\s*[\.\-\)]?\s*(.*?)\s*$")
 BULLET_LINE_RE = re.compile(r"^\s*[-•]\s*(.*?)\s*$")
 INVITED_BY_RE = re.compile(
-    r"\(\s*(?:conv\.?|convidado(?:\s+por)?)\s+(.+?)\)?\s*$",
+    r"\(\s*(?:conv(?:\.\s*|\s+)|convidado(?:\s+por)?\s+)(.+?)\)?\s*$",
     re.IGNORECASE,
 )
 TRAILING_INVITED_BY_RE = re.compile(
@@ -99,6 +99,7 @@ class ParsedWeeklyAttendanceLine:
     normalized_invited_by: str | None
     prebuilt_team_number: int | None = None
     is_guest: bool = False
+    has_paid: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ class ParsedWeeklyAttendance:
     game_date: date
     title: str
     entries: list[ParsedWeeklyAttendanceLine]
+    numbering_corrected: bool = False
 
 
 def normalize_spaces(value: str) -> str:
@@ -130,13 +132,13 @@ def parse_monthly_subscribers_message(
     month_hint: int | None = None,
     year_hint: int | None = None,
     allow_unrecognized_header: bool = False,
+    line_positions: dict[int, int] | None = None,
 ) -> ParsedMonthlySubscribers:
-    lines = [normalize_spaces(line) for line in text.splitlines()]
-    lines = [line for line in lines if line]
+    lines = _indexed_lines(text)
     if not lines:
         raise ParseError("mensagem vazia")
 
-    title = lines[0]
+    title = lines[0][1]
     normalized_title = normalize_name(title)
     header_match = HEADER_RE.search(normalized_title)
     implicit_header = IMPLICIT_MONTHLY_HEADER_RE.search(normalized_title)
@@ -160,12 +162,14 @@ def parse_monthly_subscribers_message(
         raise ParseError("ano da lista mensal invalido")
 
     subscribers: list[ParsedSubscriberLine] = []
-    for line in lines[1:]:
+    for index, line in lines[1:]:
         line_match = LINE_RE.match(line)
         if not line_match:
             continue
 
         position = int(line_match.group(1))
+        if line_positions is not None:
+            line_positions[position] = index
         raw_name = line_match.group(2)
         has_paid = CHECK_MARK in raw_name
         name = normalize_spaces(raw_name.replace(CHECK_MARK, ""))
@@ -208,13 +212,13 @@ def parse_weekly_attendance_message(
     received_at: datetime | None = None,
     game_date_hint: date | None = None,
     allow_unrecognized_header: bool = False,
+    line_positions: dict[tuple[str, int], int] | None = None,
 ) -> ParsedWeeklyAttendance:
-    lines = [normalize_spaces(line) for line in text.splitlines()]
-    lines = [line for line in lines if line]
+    lines = _indexed_lines(text)
     if not lines:
         raise ParseError("mensagem vazia")
 
-    title = lines[0]
+    title = lines[0][1]
     normalized_title = normalize_name(title)
     header_match = WEEKLY_HEADER_RE.search(normalized_title)
     implicit_header = IMPLICIT_WEEKLY_HEADER_RE.search(normalized_title)
@@ -247,10 +251,10 @@ def parse_weekly_attendance_message(
     section = "main"
     guest_position = 0
     used_positions: dict[str, set[int]] = {"main": set(), "guests": set()}
+    numbering_corrected = False
     entries: list[ParsedWeeklyAttendanceLine] = []
-    for line in lines[1:]:
-        normalized_line = normalize_name(line)
-        if normalized_line in {"conv", "conv."} or GUEST_SECTION_RE.match(normalized_line):
+    for index, line in lines[1:]:
+        if is_weekly_guest_header(line):
             section = "guests"
             continue
 
@@ -273,6 +277,7 @@ def parse_weekly_attendance_message(
             else:
                 continue
 
+        has_paid = CHECK_MARK in raw_line_name
         raw_name = normalize_spaces(raw_line_name.replace(CHECK_MARK, ""))
         if not raw_name:
             continue
@@ -285,15 +290,16 @@ def parse_weekly_attendance_message(
 
         invited_by = None
         is_guest = section == "guests"
+        self_guest = bool(SELF_GUEST_LABEL_RE.search(raw_name))
         invited_match = INVITED_BY_RE.search(raw_name)
         if invited_match:
-            invited_by = normalize_spaces(invited_match.group(1))
+            invited_by = normalize_spaces(invited_match.group(1).strip().removesuffix(")")) or None
             raw_name = normalize_spaces(INVITED_BY_RE.sub("", raw_name))
             is_guest = True
         else:
             trailing_invited_match = TRAILING_INVITED_BY_RE.search(raw_name)
             if trailing_invited_match:
-                invited_by = normalize_spaces(trailing_invited_match.group(1))
+                invited_by = normalize_spaces(trailing_invited_match.group(1).strip().removesuffix(")")) or None
                 raw_name = normalize_spaces(TRAILING_INVITED_BY_RE.sub("", raw_name))
                 is_guest = True
 
@@ -302,19 +308,23 @@ def parse_weekly_attendance_message(
         guest_label_match = GUEST_LABEL_RE.search(raw_name)
         if guest_label_match:
             is_guest = True
-            guest_name = normalize_spaces(GUEST_LABEL_RE.sub("", raw_name))
-            if invited_by is None and SELF_GUEST_LABEL_RE.search(raw_name):
-                invited_by = guest_name
-            raw_name = guest_name
+            if invited_by is None:
+                self_guest = self_guest or bool(SELF_GUEST_LABEL_RE.search(raw_name))
+            raw_name = normalize_spaces(GUEST_LABEL_RE.sub("", raw_name))
         raw_name = normalize_spaces(TRAILING_ASTERISKS_RE.sub("", raw_name))
         if not raw_name:
             continue
+        if self_guest:
+            invited_by = raw_name
 
         if position < 1:
             continue
         while position in used_positions[section]:
             position += 1
+            numbering_corrected = True
         used_positions[section].add(position)
+        if line_positions is not None:
+            line_positions[section, position] = index
 
         entries.append(
             ParsedWeeklyAttendanceLine(
@@ -326,6 +336,7 @@ def parse_weekly_attendance_message(
                 normalized_invited_by=normalize_name(invited_by) if invited_by else None,
                 prebuilt_team_number=prebuilt_team_number,
                 is_guest=is_guest,
+                has_paid=has_paid,
             )
         )
 
@@ -336,7 +347,18 @@ def parse_weekly_attendance_message(
         game_date=game_date,
         title=title,
         entries=entries,
+        numbering_corrected=numbering_corrected,
     )
+
+
+def is_weekly_guest_header(line: str) -> bool:
+    normalized = normalize_name(line)
+    return normalized in {"conv", "conv."} or bool(GUEST_SECTION_RE.match(normalized))
+
+
+def _indexed_lines(text: str) -> list[tuple[int, str]]:
+    lines = ((index, normalize_spaces(line)) for index, line in enumerate(text.splitlines()))
+    return [(index, line) for index, line in lines if line]
 
 
 def _infer_weekly_game_date(reference_date: date) -> date:

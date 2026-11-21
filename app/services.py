@@ -1,5 +1,5 @@
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,7 @@ from app.config import get_single_game_price_cents, get_weekly_attendance_capaci
 from app.aliases import resolve_normalized_name
 from app.message_templates import render_weekly_attendance_message
 from app.models import (
+    Charge,
     MonthlySubscriber,
     WeeklyAttendance,
     WeeklyAttendanceEntry,
@@ -64,74 +65,40 @@ async def process_monthly_subscribers_message(
         session,
         parsed=parsed,
         commit=commit,
+        received_at=received_at,
     )
 
 
 async def apply_monthly_subscribers(
-    session: AsyncSession,
-    *,
-    parsed: ParsedMonthlySubscribers,
-    commit: bool = True,
+    session: AsyncSession, *, parsed: ParsedMonthlySubscribers, commit: bool = True,
+    received_at: datetime | None = None,
 ) -> ProcessMessageResponse:
-
+    from app import management as d
+    from app.models import Person
     parsed = await _resolve_monthly_aliases(session, parsed)
-    created: list[SubscriberChange] = []
-    updated: list[SubscriberChange] = []
-    deleted: list[SubscriberChange] = []
-    unchanged: list[SubscriberChange] = []
-
+    created, updated, deleted, unchanged = [], [], [], []
+    timestamp=d.aware(received_at)
+    await d.lock(session,f"monthly:{parsed.year:04d}-{parsed.month:02d}")
     for line in parsed.subscribers:
-        existing = await _get_by_position(
-            session,
-            month=parsed.month,
-            year=parsed.year,
-            position=line.position,
-        )
-
+        existing = await _get_by_position(session, month=parsed.month, year=parsed.year, position=line.position)
         if line.name is None:
-            if existing is not None:
-                await session.delete(existing)
-                deleted.append(
-                    SubscriberChange(position=line.position, name=existing.name)
-                )
+            if existing:
+                await d.monthly_remove(session,existing,at=timestamp,source="whatsapp")
+                deleted.append(SubscriberChange(position=line.position,name=existing.name))
             continue
-
-        if existing is None:
-            session.add(
-                MonthlySubscriber(
-                    position=line.position,
-                    name=line.name,
-                    normalized_name=line.normalized_name,
-                    month=parsed.month,
-                    year=parsed.year,
-                    has_paid=line.has_paid,
-                )
-            )
-            created.append(_change_from_line(line))
-            continue
-
-        if _has_changes(existing, line):
-            existing.name = line.name
-            existing.normalized_name = line.normalized_name
-            existing.has_paid = line.has_paid
-            updated.append(_change_from_line(line))
-        else:
-            unchanged.append(_change_from_line(line))
-
-    if commit:
-        await session.commit()
-    else:
-        await session.flush()
-
-    return ProcessMessageResponse(
-        type="monthly_subscribers",
-        month=parsed.month,
-        year=parsed.year,
-        created=created,
-        updated=updated,
-        deleted=deleted,
-        unchanged=unchanged,
-    )
+        person=await d.person_for_name(session,line.name)
+        if existing is not None and existing.person_id!=person.id:
+            await d.monthly_remove(session,existing,at=timestamp,source="whatsapp")
+            await session.flush()
+            if existing.deleted_at is None:
+                unchanged.append(_change_from_line(line))
+                continue
+        category=created if existing is None else (updated if _has_changes(existing,line) else unchanged)
+        await d.monthly_upsert(session,person,parsed.month,parsed.year,has_paid=line.has_paid,position=line.position,at=timestamp,source="whatsapp",source_name=line.name)
+        category.append(_change_from_line(line))
+    if commit: await session.commit()
+    else: await session.flush()
+    return ProcessMessageResponse(type="monthly_subscribers",month=parsed.month,year=parsed.year,created=created,updated=updated,deleted=deleted,unchanged=unchanged)
 
 
 async def process_weekly_attendance_message(
@@ -151,142 +118,70 @@ async def process_weekly_attendance_message(
 
 
 async def apply_weekly_attendance(
-    session: AsyncSession,
-    *,
-    parsed: ParsedWeeklyAttendance,
-    received_at: datetime | None = None,
-    commit: bool = True,
+    session: AsyncSession, *, parsed: ParsedWeeklyAttendance,
+    received_at: datetime | None = None, commit: bool = True,
 ) -> WeeklyAttendanceResponse:
-    parsed = await _resolve_weekly_aliases(session, parsed)
-    attendance = await _get_weekly_attendance(session, game_date=parsed.game_date)
-    capacity = attendance.capacity if attendance is not None else get_weekly_attendance_capacity()
-    cutoff_at = _build_cutoff_at(parsed.game_date)
-    reference_time = _normalize_reference_time(received_at)
-    monthly_names = await _get_monthly_subscriber_names(
-        session,
-        month=parsed.game_date.month,
-        year=parsed.game_date.year,
-    )
-    states = _build_entry_states(
-        parsed.entries,
-        monthly_names=monthly_names,
-        capacity=capacity,
-        after_cutoff=reference_time >= cutoff_at,
-    )
-
+    from app import management as d
+    parsed=await _resolve_weekly_aliases(session,parsed)
+    timestamp=d.aware(received_at)
+    await d.lock(session,f"weekly-date:{parsed.game_date}")
+    attendance=await _get_weekly_attendance(session,game_date=parsed.game_date)
     if attendance is None:
-        attendance = WeeklyAttendance(
-            game_date=parsed.game_date,
-            capacity=capacity,
-            cutoff_at=cutoff_at,
-        )
+        attendance=WeeklyAttendance(game_date=parsed.game_date,capacity=get_weekly_attendance_capacity(),cutoff_at=_build_cutoff_at(parsed.game_date),starts_at=datetime.combine(parsed.game_date,time(19,30),LOCAL_TZ))
         session.add(attendance)
         await session.flush()
-    else:
-        attendance.capacity = capacity
-        attendance.cutoff_at = cutoff_at
-        await session.execute(
-            delete(WeeklyAttendanceEntry).where(
-                WeeklyAttendanceEntry.attendance_id == attendance.id
-            )
-        )
-
-    for state in states:
-        session.add(
-            WeeklyAttendanceEntry(
-                attendance_id=attendance.id,
-                source_section=state.section,
-                source_position=state.position,
-                display_order=state.display_order,
-                name=state.name,
-                normalized_name=state.normalized_name,
-                invited_by=state.invited_by,
-                normalized_invited_by=state.normalized_invited_by,
-                status=state.status,
-                is_monthly_subscriber=state.is_monthly_subscriber,
-                owes_single_payment=state.owes_single_payment,
-                single_payment_amount_cents=state.single_payment_amount_cents,
-                prebuilt_team_number=state.prebuilt_team_number,
-            )
-        )
-    if commit:
-        await session.commit()
-    else:
-        await session.flush()
-
-    return WeeklyAttendanceResponse(
-        type="weekly_attendance",
-        game_date=attendance.game_date,
-        cutoff_at=attendance.cutoff_at,
-        capacity=attendance.capacity,
-        entries=[_weekly_entry_to_response(state) for state in states],
+    await d.lock(session,f"game:{attendance.id}")
+    persons=[await d.person_for_name(session,line.name) for line in parsed.entries]
+    incoming={p.id for p in persons}
+    for entry in await d.active_entries(session,attendance.id):
+        if entry.person_id not in incoming:
+            await d.remove_entry(session,attendance,entry,at=timestamp,source="whatsapp")
+    applied_entries=[]
+    for line,person in zip(parsed.entries,persons):
+        entry=await d.add_entry(session,attendance,person,at=timestamp,source="whatsapp",invited_by=line.invited_by,section=line.section,team=line.prebuilt_team_number,source_name=line.name)
+        if entry is not None:
+            applied_entries.append((line,entry))
+    current_entries=await d.active_entries(session,attendance.id)
+    max_position=max((entry.source_position or 0 for entry in current_entries),default=0)
+    for index,entry in enumerate(current_entries,1):
+        entry.source_position=max_position+len(current_entries)+index
+    await session.flush()
+    for display_order, (line, entry) in enumerate(applied_entries, 1):
+        entry.display_order=display_order
+        entry.source_position=line.position
+        entry.source_section=line.section
+    await d.recalculate(
+        session, attendance, timestamp, source="whatsapp",
+        defer_snapshot_charges=True,
     )
-
-
-async def promote_due_weekly_attendances(
-    session: AsyncSession,
-    *,
-    now: datetime | None = None,
-) -> PromoteDueResponse:
-    reference_time = _normalize_reference_time(now)
-    result = await session.execute(
-        select(WeeklyAttendance)
-        .options(selectinload(WeeklyAttendance.entries))
-        .where(WeeklyAttendance.cutoff_at <= reference_time)
+    paid_person_ids = {
+        entry.person_id for line, entry in applied_entries
+        if line.has_paid and entry.person_id is not None
+    }
+    await d.reconcile_weekly_snapshot_charges(
+        session, attendance, occurred_at=timestamp, source="whatsapp", paid_person_ids=paid_person_ids,
     )
-    attendances = result.scalars().unique().all()
-    processed: list[PromotionResult] = []
+    entries=await d.active_entries(session,attendance.id)
+    if commit: await session.commit()
+    else: await session.flush()
+    return WeeklyAttendanceResponse(type="weekly_attendance",game_date=attendance.game_date,cutoff_at=attendance.cutoff_at,capacity=attendance.capacity,entries=[_weekly_entry_to_response(e) for e in entries])
 
+
+async def promote_due_weekly_attendances(session: AsyncSession, *, now: datetime | None = None) -> PromoteDueResponse:
+    from app import management as d
+    reference=d.aware(now)
+    attendances=(await session.scalars(select(WeeklyAttendance).where(WeeklyAttendance.cutoff_at<=reference))).all()
+    processed=[]
     for attendance in attendances:
-        monthly_names = await _get_monthly_subscriber_names(
-            session,
-            month=attendance.game_date.month,
-            year=attendance.game_date.year,
-        )
-        lines = [
-            ParsedWeeklyAttendanceLine(
-                section=entry.source_section,
-                position=entry.source_position,
-                name=entry.name,
-                normalized_name=entry.normalized_name,
-                invited_by=entry.invited_by,
-                normalized_invited_by=entry.normalized_invited_by,
-                prebuilt_team_number=entry.prebuilt_team_number,
-            )
-            for entry in sorted(attendance.entries, key=lambda item: item.display_order)
-        ]
-        states = _build_entry_states(
-            lines,
-            monthly_names=monthly_names,
-            capacity=attendance.capacity,
-            after_cutoff=True,
-        )
-        promoted: list[WeeklyAttendanceEntryResponse] = []
-        entries_by_key = {
-            (entry.source_section, entry.source_position): entry for entry in attendance.entries
-        }
-        for state in states:
-            entry = entries_by_key[(state.section, state.position)]
-            was_waiting = entry.status == "waiting"
-            entry.status = state.status
-            entry.is_monthly_subscriber = state.is_monthly_subscriber
-            entry.owes_single_payment = state.owes_single_payment
-            entry.single_payment_amount_cents = state.single_payment_amount_cents
-            if was_waiting and state.status == "main":
-                promoted.append(_weekly_entry_to_response(state))
-
+        if reference >= d.starts(attendance):
+            continue
+        await d.lock(session,f"game:{attendance.id}")
+        before={e.id:e.status for e in await d.active_entries(session,attendance.id)}
+        await d.recalculate(session,attendance,reference,source="promotion")
+        entries=await d.active_entries(session,attendance.id)
+        promoted=[_weekly_entry_to_response(e) for e in entries if before.get(e.id)=="waiting" and e.status=="main"]
         if promoted:
-            processed.append(
-                PromotionResult(
-                    game_date=attendance.game_date,
-                    promoted=promoted,
-                    text=render_weekly_attendance_message(
-                        attendance.game_date,
-                        sorted(attendance.entries, key=lambda item: item.display_order),
-                    ),
-                )
-            )
-
+            processed.append(PromotionResult(game_date=attendance.game_date,promoted=promoted,text=render_weekly_attendance_message(attendance.game_date,entries)))
     await session.commit()
     return PromoteDueResponse(processed=processed)
 
@@ -309,7 +204,7 @@ async def get_weekly_attendance_message(
         game_date=attendance.game_date,
         text=render_weekly_attendance_message(
             attendance.game_date,
-            sorted(attendance.entries, key=lambda item: item.display_order),
+            sorted([e for e in attendance.entries if getattr(e,"deleted_at",None) is None], key=lambda item: item.display_order),
         ),
     )
 
@@ -326,6 +221,7 @@ async def _get_by_position(
             MonthlySubscriber.month == month,
             MonthlySubscriber.year == year,
             MonthlySubscriber.position == position,
+            MonthlySubscriber.deleted_at.is_(None),
         )
     )
     return result.scalar_one_or_none()
@@ -351,9 +247,18 @@ async def _get_monthly_subscriber_names(
     year: int,
 ) -> Counter[str]:
     result = await session.execute(
-        select(MonthlySubscriber.normalized_name).where(
+        select(MonthlySubscriber.normalized_name)
+        .join(
+            Charge,
+            (Charge.person_id == MonthlySubscriber.person_id)
+            & (Charge.type == "monthly")
+            & (Charge.reference_date == date(year, month, 1))
+            & (Charge.status == "paid"),
+        )
+        .where(
             MonthlySubscriber.month == month,
             MonthlySubscriber.year == year,
+            MonthlySubscriber.deleted_at.is_(None),
         )
     )
     return Counter(result.scalars().all())
@@ -383,14 +288,15 @@ async def _resolve_monthly_aliases(session: AsyncSession, parsed: ParsedMonthlyS
 async def _resolve_weekly_aliases(session: AsyncSession, parsed: ParsedWeeklyAttendance):
     lines = []
     for line in parsed.entries:
-        lines.append(ParsedWeeklyAttendanceLine(
-            section=line.section, position=line.position, name=line.name,
+        lines.append(replace(
+            line,
             normalized_name=await resolve_normalized_name(session, line.normalized_name),
-            invited_by=line.invited_by,
             normalized_invited_by=await resolve_normalized_name(session, line.normalized_invited_by),
-            prebuilt_team_number=line.prebuilt_team_number, is_guest=line.is_guest,
         ))
-    return ParsedWeeklyAttendance(parsed.game_date, parsed.title, lines)
+    return ParsedWeeklyAttendance(
+        parsed.game_date, parsed.title, lines,
+        numbering_corrected=parsed.numbering_corrected,
+    )
 
 
 def _change_from_line(line: ParsedSubscriberLine) -> SubscriberChange:
@@ -433,7 +339,7 @@ def _build_entry_states(
         if is_monthly_subscriber:
             remaining_monthly_names[line.normalized_name] -= 1
         has_priority = line.section == "main" and is_monthly_subscriber
-        is_main = has_priority and main_slots < capacity
+        is_main = (after_cutoff or has_priority) and main_slots < capacity
         if is_main:
             main_slots += 1
         else:
