@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -51,6 +51,22 @@ MessageType = Literal[
 RESULT_LIMIT = 200
 
 
+async def find_realtime_message(
+    session: AsyncSession, *, chat_id: str, message_id: str | None
+) -> ProcessedConversationMessage | None:
+    if not message_id:
+        return None
+    from app.management import lock
+
+    await lock(session, f"waha-message:{chat_id}:{message_id}")
+    return await session.scalar(
+        select(ProcessedConversationMessage).where(
+            ProcessedConversationMessage.chat_id == chat_id,
+            ProcessedConversationMessage.provider_message_id == message_id,
+        )
+    )
+
+
 def realtime_message_fingerprint(
     *,
     chat_id: str,
@@ -78,28 +94,34 @@ async def record_realtime_processed_message(
     text: str,
     occurred_at: datetime,
     sender_name: str | None,
+    sender_id: str | None,
     message_id: str | None,
     source: str | None,
     message_type: Literal["monthly_subscribers", "weekly_attendance"],
     aggregate_key: str,
-    status: Literal["applied", "unchanged"],
+    status: Literal["applied", "unchanged", "stale"],
     result: dict,
-) -> None:
+) -> UUID:
     """Record a message accepted by the direct/n8n ingestion path."""
-    normalized_occurred_at = (
-        occurred_at
-        if occurred_at.tzinfo is not None
-        else occurred_at.replace(tzinfo=timezone.utc)
-    )
-    await _record_processed_message_values(
-        session,
-        fingerprint=realtime_message_fingerprint(
-            chat_id=chat_id,
-            occurred_at=normalized_occurred_at,
-            sender_name=sender_name,
-            text=text,
-        ),
+    from app.management import aware
+
+    normalized_occurred_at = aware(occurred_at)
+    fingerprint = realtime_message_fingerprint(
         chat_id=chat_id,
+        occurred_at=normalized_occurred_at,
+        sender_name=sender_name,
+        text=text,
+    )
+    if message_id:
+        fingerprint = sha256(f"{fingerprint}\0{message_id}".encode("utf-8")).hexdigest()
+    identifier = await _record_processed_message_values(
+        session,
+        fingerprint=fingerprint,
+        chat_id=chat_id,
+        provider_message_id=message_id,
+        sender_id=sender_id,
+        source=source or "realtime",
+        raw_text=text,
         source_ordinal=0,
         occurred_at=normalized_occurred_at,
         sender_name=sender_name,
@@ -115,6 +137,12 @@ async def record_realtime_processed_message(
         },
         result=result,
     )
+
+    from app.management import audit
+    await audit(session,entity_type="ingestion",entity_id=aggregate_key,action=message_type,
+                user={"name":sender_name or "WhatsApp"},source=source or "whatsapp",
+                occurred_at=normalized_occurred_at,after={"message_id":message_id,"status":status})
+    return identifier
 
 
 @dataclass(frozen=True)
@@ -531,7 +559,7 @@ async def _process_prepared_message(
         "monthly_subscribers",
         "weekly_attendance",
     }:
-        await _record_processed_message(
+        message_id = await _record_processed_message(
             session,
             item=item,
             chat_id=chat_id,
@@ -539,6 +567,30 @@ async def _process_prepared_message(
             analysis=analysis,
             result=result,
         )
+        if status in {"applied", "unchanged"} and item.aggregate_key:
+            from app.list_sources import link_message_to_entries
+
+            await link_message_to_entries(
+                session,
+                message_id=message_id,
+                message_type=item.message_type,
+                text=item.message.text,
+                occurred_at=item.message.occurred_at,
+            )
+        if status in {"applied", "unchanged"} and item.aggregate_key:
+            from app.audit_history import record_list_history
+            await record_list_history(session, message_id=message_id, message_type=item.message_type,
+                chat_id=chat_id, aggregate_key=item.aggregate_key, text=item.message.text,
+                occurred_at=item.message.occurred_at, status=persisted_status,
+                sender_name=item.message.sender_name)
+
+    if mode == "apply":
+        from app.management import audit
+        await audit(session,entity_type="import",entity_id=item.aggregate_key or item.fingerprint,
+                    action=item.message_type,user={"name":item.message.sender_name or "WhatsApp"},
+                    source="import",occurred_at=item.message.occurred_at,
+                    after={"fingerprint":item.fingerprint,"aggregate_key":item.aggregate_key},
+                    status="stale" if status=="stale" else "applied")
 
     return ConversationImportMessageResult(
         fingerprint=item.fingerprint,
@@ -575,11 +627,15 @@ async def _record_processed_message(
     status: str,
     analysis: dict,
     result: dict,
-) -> None:
-    await _record_processed_message_values(
+) -> UUID:
+    return await _record_processed_message_values(
         session,
         fingerprint=item.fingerprint,
         chat_id=chat_id,
+        provider_message_id=None,
+        sender_id=None,
+        source="import",
+        raw_text=item.message.text,
         source_ordinal=item.message.ordinal,
         occurred_at=item.message.occurred_at,
         sender_name=item.message.sender_name,
@@ -598,6 +654,10 @@ async def _record_processed_message_values(
     *,
     fingerprint: str,
     chat_id: str,
+    provider_message_id: str | None,
+    sender_id: str | None,
+    source: str | None,
+    raw_text: str | None,
     source_ordinal: int,
     occurred_at: datetime,
     sender_name: str | None,
@@ -608,13 +668,18 @@ async def _record_processed_message_values(
     confidence: float,
     analysis: dict,
     result: dict,
-) -> None:
+) -> UUID:
+    identifier = uuid4()
     statement = (
         postgresql_insert(ProcessedConversationMessage)
         .values(
-            id=uuid4(),
+            id=identifier,
             fingerprint=fingerprint,
             chat_id=chat_id,
+            provider_message_id=provider_message_id,
+            sender_id=sender_id,
+            source=source,
+            raw_text=raw_text,
             source_ordinal=source_ordinal,
             occurred_at=occurred_at,
             sender_name=sender_name,
@@ -627,10 +692,23 @@ async def _record_processed_message_values(
             result=result,
         )
         .on_conflict_do_nothing(
-            constraint="uq_processed_conversation_messages_fingerprint"
+            index_elements=[ProcessedConversationMessage.chat_id, ProcessedConversationMessage.provider_message_id]
+            if provider_message_id is not None
+            else [ProcessedConversationMessage.fingerprint]
         )
     )
     await session.execute(statement)
+    existing_id = await session.scalar(
+        select(ProcessedConversationMessage.id).where(
+            (ProcessedConversationMessage.chat_id == chat_id)
+            & (
+                (ProcessedConversationMessage.provider_message_id == provider_message_id)
+                if provider_message_id is not None
+                else (ProcessedConversationMessage.fingerprint == fingerprint)
+            )
+        )
+    )
+    return existing_id or identifier
 
 
 async def _clean_weekly_names_with_ai(
@@ -761,6 +839,7 @@ async def _apply_domain_message(
         return await apply_monthly_subscribers(
             session,
             parsed=item.parsed,
+            received_at=item.message.occurred_at,
             commit=False,
         )
     if not isinstance(item.parsed, ParsedWeeklyAttendance):
