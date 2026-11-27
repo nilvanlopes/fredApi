@@ -70,6 +70,50 @@ Exemplo de payload:
 }
 ```
 
+### Atualizações de pagamento no WhatsApp
+
+Ao marcar ou desfazer um pagamento no painel, o Fred enfileira a publicação da
+lista mensal de assinantes ou da lista semanal da partida. A mensagem completa
+vai para o grupo oficial com o ✅ nas linhas pagas. A atualização fica registrada
+na mesma transação que o pagamento, e o Fred repete o envio em caso de falha.
+
+Importe `docs/n8n/fred-payment-list.json` no n8n e substitua
+`FRED_WHATSAPP_GROUP@g.us` pelo ID do grupo oficial no nó `Validar atualização`.
+O workflow usa a credencial `Fred Payment Webhook` do tipo Header Auth,
+com o cabeçalho `Authorization` e o valor `Bearer <token>`. Confira a credencial
+`WAHA API` antes de publicar o workflow.
+No `.env` do Fred, configure `FRED_PAYMENT_WEBHOOK_URL` com
+`http://n8n:5678/webhook/fred-payment-list` na rede Docker compartilhada e
+`FRED_PAYMENT_WEBHOOK_TOKEN` com o mesmo token da credencial. Configure também
+`FRED_PAYMENT_WHATSAPP_CHAT_ID` com o ID do grupo oficial para selecionar as
+mensagens de origem desse grupo.
+
+Se o WAHA publicar a mensagem e a confirmação se perder, uma nova tentativa
+pode aparecer no grupo como segunda mensagem.
+
+### Convidantes na lista semanal do WhatsApp
+
+Quando uma nova lista do grupo oficial inclui um convidado sem indicação de
+quem o convidou, o Fred complementa a linha com `(conv. Nome do contato)` e o
+WhatsApp Router publica a mensagem completa. O Router confirma a mensagem no
+WAHA e consulta o contato do remetente antes de pedir a correção. Sem um nome
+disponível, o Fred processa a lista normalmente. Mensagens enviadas pelo próprio
+número conectado ao WAHA seguem o processamento habitual.
+
+Quando um snapshot semanal posterior remove participantes já registrados, o
+Fred publica a lista integral renderizada do estado persistido após a remoção.
+Isso corrige a numeração e preserva os dados de convidados; snapshots sem
+remoções continuam sem uma republicação adicional.
+
+Se o remetente colocar o próprio nome na lista principal e não tiver a
+mensalidade do jogo paga, o Fred deixa a posição livre e republica a lista com
+o nome no final de Convidados, marcado com `(conv)`. Se já havia um convidante
+registrado, o Fred o mantém.
+
+Para preparar a atualização do Router, exporte o workflow `Fred WhatsApp Router`
+e passe o JSON pelo script `docs/n8n/patch-guest-inviter-router.py`. O script gera
+o JSON atualizado na saída padrão.
+
 ## Importar uma conversa do WhatsApp
 
 Execute primeiro em `preview`, que simula as alterações e faz rollback:
@@ -335,3 +379,100 @@ docker compose run --rm api alembic revision --autogenerate -m "descricao"
 - Linhas numeradas sem nome são interpretadas como remoção da posição.
 - Na lista semanal, linha com posicao `0` e ignorada porque nao e posicao valida.
 - O símbolo `✅` indica pagamento.
+
+
+## Painel web
+
+O frontend React/TypeScript fica em `frontend/` e é publicado em
+https://fred.nilvanlopes.com. O nginx serve a SPA e encaminha `/api/` à API na
+mesma origem. Banco, MCP e endpoints antigos de integração continuam internos.
+
+Gestores administram jogadores, apelidos, contas, mensalistas, partidas,
+cobranças e auditoria. Jogadores autenticados veem somente seus dados e podem
+entrar/sair das partidas até o início. Uma conta nova aguarda o gestor vinculá-la
+a um jogador; sem vínculo ela não recebe dados de outras pessoas.
+
+As partidas ocorrem às quartas às 19h30 de São Paulo, com horário editável.
+Mensalistas têm prioridade até 16h; após esse corte, as vagas seguem a fila.
+Espera não gera avulso. Saída antes do início cancela a cobrança correspondente;
+pagamentos já recebidos permanecem no histórico, sem devolução automática.
+Valores iniciais: R$12,50 mensais e R$7,50 por avulso, registrados por cobrança.
+
+A alteração mais recente por horário de origem prevalece entre painel e
+WhatsApp. Eventos antigos permanecem auditados e não desfazem dados mais
+recentes. Auditoria completa começa com a implantação; o backfill dos registros
+anteriores é identificado como migração.
+
+### Authentik e publicação
+
+Há aplicação, provider, source Google, fluxos, grupos e outpost próprios do Fred.
+O backend verifica o cookie diretamente com o outpost; headers de identidade
+recebidos do navegador não concedem acesso. Cadastro público concede somente
+`fred-users`; a conta existente `pyu` recebe `fred-admins` no provisionamento.
+Novos gestores podem ser promovidos no painel.
+
+O provisionador usa os objetos do FichasRPG como referência. A landing do Fred
+abre o fluxo Authentik, com email ou usuário e senha na mesma etapa e Google
+abaixo. A marca do Authentik mantém a estrutura do login do FichasRPG e usa o
+logotipo e os ícones esportivos servidos pelo Fred. Execute dentro do container
+Authentik para aplicar ou reaplicar a configuração:
+
+```bash
+docker exec -i CONTAINER_AUTHENTIK ak shell -c 'import sys; exec(sys.stdin.read())' < fred/docker/configure_authentik.py
+```
+
+Salve o token do outpost `fred-outpost` em
+`authentik/outposts/fred/.env` (arquivo ignorado pelo Git). Cadastre no cliente
+OAuth Google o URI exato:
+`https://login-fred.nilvanlopes.com/source/oauth/callback/google-fred/`.
+O cadastro manual usa o fluxo dedicado com confirmação de email; o serviço
+SMTP do Authentik precisa estar operacional.
+
+Na raiz Docker:
+
+```bash
+make deploy-authentik-outpost-fred
+make deploy-fred
+```
+
+O deploy constrói API e web e aplica migrações Alembic. Antes de atualizar um
+banco existente, faça `pg_dump -Fc` e guarde o arquivo fora do repositório. As
+rotas estão em `traefik/infra/traefik/dynamic/fred.yml`; os dois hostnames devem
+ter DNS apontando para o Tunnel existente.
+
+Para desenvolvimento e checks da interface:
+
+```bash
+cd fred/frontend
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm build
+```
+
+A API continua usando os testes em `tests/`; a suíte de domínio usa PostgreSQL
+isolado quando `FRED_TEST_DATABASE_URL` estiver definido. Nunca use o banco de
+produção para esses testes.
+
+### Revisão dos vínculos históricos
+
+A migração preserva todas as linhas mensais e semanais e associa identidades
+pelo nome normalizado e pelos aliases existentes. Nomes iguais podem representar
+homônimos; o gestor deve revisar o vínculo entre conta e jogador antes de liberar
+um perfil histórico. A criação de alias que já identifica outra pessoa é recusada
+para evitar uma fusão financeira silenciosa.
+
+As cobranças são consolidadas por pessoa e período (mês ou partida). Por isso,
+linhas históricas repetidas não geram cobrança em dobro. Na migração inicial,
+335 linhas mensais e 1.301 entradas em 66 partidas produziram 786 cobranças:
+6 repetições mensais e 4 avulsas foram consolidadas, sem divergência de pagamento
+entre as mensalidades repetidas. O saldo pendente consolidado foi R$ 3.715,00.
+Esses números descrevem a migração, não os saldos atuais. Os eventos iniciais
+usam origem `migration`; a auditoria detalhada começa com as novas operações.
+
+### Perfis públicos de jogadores
+
+O escopo consolidado, as APIs de perfil, foto e avaliações, as regras do card
+das listas e a preparação do bucket privado estão em
+[Perfis de jogadores](docs/player-profiles.md). A migração correspondente é
+`0015_player_profiles`. Execute as suítes de backend e frontend antes de
+publicar essa versão; a implementação não atualiza os serviços de produção.
