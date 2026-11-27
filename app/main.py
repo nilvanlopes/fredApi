@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 import os
 from typing import Literal
 
@@ -6,12 +6,15 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import management as d
 from app.config import get_conversation_import_max_bytes
 from app.conversation_ai import ConversationAIError
 from app.conversation_import import (
+    find_realtime_message,
     process_conversation_import,
     record_realtime_processed_message,
 )
+from app.list_sources import link_message_to_entries
 from app.database import get_session
 from app.aliases import create_alias
 from app.message_templates import (
@@ -24,13 +27,15 @@ from app.ollama_service import (
     start_ollama_for_agent,
     stop_ollama_after_agent,
 )
-from app.parser import ParseError, parse_monthly_subscribers_message
+from app.parser import ParseError, parse_monthly_subscribers_message, parse_weekly_attendance_message
+from app.payment_notifications import empty_weekly_list_message, payment_notification_lifespan
 from app.schemas import (
     ConversationImportResponse,
     MonthlyMessageTemplateResponse,
     ProcessMessageRequest,
     ProcessMessageResponse,
     PromoteDueResponse,
+    RecordSentMessageRequest,
     WeeklyAttendanceMessageResponse,
     WeeklyAttendanceResponse,
     WeeklyMessageTemplateResponse,
@@ -41,11 +46,11 @@ from app.whatsapp_export import WhatsAppExportError
 from app.services import (
     get_weekly_attendance_message,
     process_monthly_subscribers_message,
-    process_weekly_attendance_message,
     promote_due_weekly_attendances,
 )
+from app.weekly_guest_invitations import process_live_weekly_snapshot
 
-app = FastAPI(title="Volei Frederico API")
+app = FastAPI(title="Volei Frederico API", lifespan=payment_notification_lifespan)
 
 
 class OllamaStopRequest(BaseModel):
@@ -182,6 +187,12 @@ async def process_message(
     payload: ProcessMessageRequest,
     session: AsyncSession = Depends(get_session),
 ) -> ProcessMessageResponse | WeeklyAttendanceResponse:
+    chat_id = payload.chat_id or "fred"
+    previous = await find_realtime_message(session, chat_id=chat_id, message_id=payload.message_id)
+    if previous is not None:
+        return (ProcessMessageResponse.model_validate(previous.result)
+                if previous.message_type == "monthly_subscribers"
+                else WeeklyAttendanceResponse.model_validate(previous.result))
     try:
         parse_monthly_subscribers_message(payload.text, received_at=payload.received_at)
         result = await process_monthly_subscribers_message(
@@ -190,12 +201,13 @@ async def process_message(
             received_at=payload.received_at,
             commit=False,
         )
-        await record_realtime_processed_message(
+        message_id = await record_realtime_processed_message(
             session,
-            chat_id=payload.chat_id or "fred",
+            chat_id=chat_id,
             text=payload.text,
             occurred_at=payload.received_at or datetime.now(timezone.utc),
             sender_name=payload.sender_name,
+            sender_id=payload.sender_id,
             message_id=payload.message_id,
             source=payload.source,
             message_type="monthly_subscribers",
@@ -203,33 +215,15 @@ async def process_message(
             status="applied" if result.created or result.updated or result.deleted else "unchanged",
             result=result.model_dump(mode="json"),
         )
+        await link_message_to_entries(session,message_id=message_id,message_type="monthly_subscribers",
+                                      text=payload.text,occurred_at=payload.received_at or datetime.now(timezone.utc))
         await session.commit()
         return result
     except ParseError as exc:
         monthly_error = exc
 
     try:
-        result = await process_weekly_attendance_message(
-            session,
-            text=payload.text,
-            received_at=payload.received_at,
-            commit=False,
-        )
-        await record_realtime_processed_message(
-            session,
-            chat_id=payload.chat_id or "fred",
-            text=payload.text,
-            occurred_at=payload.received_at or datetime.now(timezone.utc),
-            sender_name=payload.sender_name,
-            message_id=payload.message_id,
-            source=payload.source,
-            message_type="weekly_attendance",
-            aggregate_key=f"weekly:{result.game_date.isoformat()}",
-            status="applied",
-            result=result.model_dump(mode="json"),
-        )
-        await session.commit()
-        return result
+        return await _process_and_record_weekly_message(session, payload, chat_id)
     except ParseError as exc:
         raise HTTPException(
             status_code=422,
@@ -248,12 +242,35 @@ async def process_monthly_message(
     payload: ProcessMessageRequest,
     session: AsyncSession = Depends(get_session),
 ) -> ProcessMessageResponse:
+    chat_id=payload.chat_id or "fred"
+    previous=await find_realtime_message(session,chat_id=chat_id,message_id=payload.message_id)
+    if previous is not None:
+        if previous.message_type!="monthly_subscribers":
+            raise HTTPException(409,"ID WhatsApp já usado por outra mensagem")
+        return ProcessMessageResponse.model_validate(previous.result)
     try:
-        return await process_monthly_subscribers_message(
+        result=await process_monthly_subscribers_message(
             session,
             text=payload.text,
             received_at=payload.received_at,
+            commit=False,
         )
+        occurred_at=payload.received_at or datetime.now(timezone.utc)
+        status="applied" if result.created or result.updated or result.deleted else "unchanged"
+        message_id=await record_realtime_processed_message(session,chat_id=chat_id,text=payload.text,
+            occurred_at=occurred_at,sender_name=payload.sender_name,sender_id=payload.sender_id,
+            message_id=payload.message_id,source=payload.source,message_type="monthly_subscribers",
+            aggregate_key=f"monthly:{result.year:04d}-{result.month:02d}",status=status,
+            result=result.model_dump(mode="json"))
+        await link_message_to_entries(session,message_id=message_id,message_type="monthly_subscribers",
+                                      text=payload.text,occurred_at=occurred_at)
+        from app.audit_history import record_list_history
+        await record_list_history(session, message_id=message_id, message_type="monthly_subscribers",
+            chat_id=chat_id, aggregate_key=f"monthly:{result.year:04d}-{result.month:02d}",
+            text=payload.text, occurred_at=occurred_at, status=status,
+            sender_contact_name=payload.sender_contact_name, sender_name=payload.sender_name)
+        await session.commit()
+        return result
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -266,14 +283,111 @@ async def process_weekly_message(
     payload: ProcessMessageRequest,
     session: AsyncSession = Depends(get_session),
 ) -> WeeklyAttendanceResponse:
+    chat_id=payload.chat_id or "fred"
+    previous=await find_realtime_message(session,chat_id=chat_id,message_id=payload.message_id)
+    if previous is not None:
+        if previous.message_type!="weekly_attendance":
+            raise HTTPException(409,"ID WhatsApp já usado por outra mensagem")
+        return WeeklyAttendanceResponse.model_validate(previous.result)
     try:
-        return await process_weekly_attendance_message(
-            session,
-            text=payload.text,
-            received_at=payload.received_at,
-        )
+        return await _process_and_record_weekly_message(session, payload, chat_id)
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _process_and_record_weekly_message(session, payload, chat_id) -> WeeklyAttendanceResponse:
+    occurred_at = payload.received_at or datetime.now(timezone.utc)
+    result, status = await process_live_weekly_snapshot(session, payload, occurred_at)
+    message_id = await record_realtime_processed_message(
+        session, chat_id=chat_id, text=payload.text, occurred_at=occurred_at,
+        sender_name=payload.sender_name, sender_id=payload.sender_id,
+        message_id=payload.message_id, source=payload.source, message_type="weekly_attendance",
+        aggregate_key=f"weekly:{result.game_date.isoformat()}", status=status,
+        result=result.model_dump(mode="json", exclude={"correction_text", "correction_notice"}),
+    )
+    if status == "applied":
+        await link_message_to_entries(session, message_id=message_id, message_type="weekly_attendance",
+                                      text=payload.text, occurred_at=d.aware(occurred_at).astimezone(d.TZ))
+    from app.audit_history import record_list_history
+    await record_list_history(session, message_id=message_id, message_type="weekly_attendance",
+        chat_id=chat_id, aggregate_key=f"weekly:{result.game_date.isoformat()}", text=payload.text,
+        occurred_at=occurred_at, status=status, sender_contact_name=payload.sender_contact_name,
+        sender_name=payload.sender_name,
+        semantic_text=(result.correction_text or payload.text) if status == "applied" else payload.text)
+    await session.commit()
+    return result
+
+
+@app.post("/messages/record-sent")
+async def record_sent_list_message(
+    payload: RecordSentMessageRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record a successful WAHA list send without reapplying its contents."""
+    if not payload.chat_id or not payload.message_id:
+        raise HTTPException(status_code=422, detail="chat_id e message_id são obrigatórios")
+    previous = await find_realtime_message(
+        session, chat_id=payload.chat_id, message_id=payload.message_id
+    )
+    if previous is not None:
+        return {"id": str(previous.id), "status": "duplicate"}
+    reference_date = payload.reference_date
+    parsed_monthly = None
+    try:
+        parsed_monthly = parse_monthly_subscribers_message(
+            payload.text,
+            received_at=datetime.combine(reference_date, time.min) if reference_date else payload.received_at,
+        )
+        if reference_date and (parsed_monthly.year, parsed_monthly.month) != (reference_date.year, reference_date.month):
+            raise HTTPException(status_code=422, detail="mês ou ano da lista difere da referência do envio")
+        message_type = "monthly_subscribers"
+        aggregate_key = f"monthly:{parsed_monthly.year:04d}-{parsed_monthly.month:02d}"
+        result = {"type": message_type, "month": parsed_monthly.month, "year": parsed_monthly.year}
+    except ParseError:
+        if (
+            payload.list_type == "weekly_attendance"
+            and reference_date is not None
+            and reference_date.weekday() == 2
+            and payload.text == empty_weekly_list_message(reference_date)
+        ):
+            game_date = reference_date
+        else:
+            try:
+                parsed_weekly = parse_weekly_attendance_message(
+                    payload.text, received_at=payload.received_at,
+                )
+            except ParseError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            game_date = parsed_weekly.game_date
+        message_type = "weekly_attendance"
+        aggregate_key = f"weekly:{game_date.isoformat()}"
+        result = {"type": message_type, "game_date": game_date.isoformat()}
+
+    occurred_at = payload.received_at or datetime.now(timezone.utc)
+    identifier = await record_realtime_processed_message(
+        session,
+        chat_id=payload.chat_id,
+        text=payload.text,
+        occurred_at=occurred_at,
+        sender_name=payload.sender_name or "Fred",
+        sender_id=payload.sender_id,
+        message_id=payload.message_id,
+        source=payload.source or "waha-send",
+        message_type=message_type,
+        aggregate_key=aggregate_key,
+        status="unchanged",
+        result=result,
+    )
+    await link_message_to_entries(
+        session,
+        message_id=identifier,
+        message_type=message_type,
+        text=payload.text,
+        occurred_at=occurred_at,
+        parsed_monthly=parsed_monthly,
+    )
+    await session.commit()
+    return {"id": str(identifier), "status": "recorded"}
 
 
 @app.post(
@@ -305,3 +419,16 @@ async def weekly_attendance_message(
             detail=f"lista semanal de {resolved_date.isoformat()} não encontrada",
         )
     return result
+
+
+from app.admin_api import router as management_router
+app.include_router(management_router)
+
+from app.player_profiles import router as player_profiles_router
+app.include_router(player_profiles_router)
+
+from app.auth import router as auth_router
+app.include_router(auth_router)
+
+from app.profile_photos import router as profile_photos_router
+app.include_router(profile_photos_router)
